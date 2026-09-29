@@ -227,6 +227,10 @@ Notes
   An older bx client (installed before this release) will fail to unpack this package with
   bx update --package and say so cleanly; that is expected (pre-1.0). Install it again the
   way this README describes instead.
+  Problem reports: when bx fails, it sends a redacted report to the bx maintainer, through
+  the tunnel only (never while protection is off). Server addresses, links and bypass ranges
+  never enter a report. Copies stay in /var/lib/bx/reports (bx reports lists them); turn it
+  off with reports: off in /etc/bx/config.yaml.
 TXT
 
 chmod +x "$RELEASE_DIR/install.sh" "$RELEASE_DIR/uninstall.sh"

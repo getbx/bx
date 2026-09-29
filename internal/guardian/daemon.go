@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/getbx/bx/internal/doctor"
+
 	"github.com/getbx/bx/internal/setup"
 
 	"github.com/getbx/bx/internal/config"
@@ -511,7 +513,26 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 	}
 	options.LocalAPIOwnerUID = localAPIOwnerUID
 	runner := NewExecCoreRunner(coreExecutable(os.Executable, filepath.EvalSymlinks), options.ConfigPath, options.DNSListen)
+	// 问题上报(reporter.go):配置定开关与端点;Doctor / LogTail / Protected 闭包在
+	// manager 上 —— reporter 是 Manager 的选项、先于它构造,所以闭包捕获的是下面才赋值
+	// 的那个变量。读不到配置时按默认(开)走:上报正是配置坏了时最该有的东西。
+	var mgr *Manager
+	reporterOpts := reporterOptionsFor(loadGuardianConfigOrDefault(options.ConfigPath), version.Version)
+	reporterOpts.InstallID = loadOrCreateInstallID(reportsInstallIDPath)
+	reporterOpts.Protected = func() bool { return mgr != nil && mgr.Status().Protection == ProtectionProtected }
+	reporterOpts.Doctor = func(ctx context.Context) doctor.Report {
+		if mgr == nil {
+			return doctor.Report{}
+		}
+		return doctor.Judge(collectDoctorFacts(ctx, options.ConfigPath, mgr.Status()))
+	}
+	reporterOpts.LogTail = func(n int) []string {
+		lines, _ := tailLines(install.GuardianStderrLogPath, n)
+		return lines
+	}
+	reporter := NewReporter(reporterOpts)
 	manager, err := NewManager(ManagerOptions{
+		Reporter:        reporter,
 		Store:           OpenDefaultStore(),
 		Runner:          runner,
 		Health:          HealthChecker{},
@@ -530,8 +551,10 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 	// AbandonProcessGroup 时成立(见 install.CoreOutlivesGuardianEnv)——否则退出会
 	// 让 launchd 收掉 Core,那几秒流量直连。
 	options.coreOutlivesGuardian = os.Getenv(install.CoreOutlivesGuardianEnv) == "1"
+	mgr = manager
 	runCtx, stopForRestart := context.WithCancel(ctx)
 	defer stopForRestart()
+	go reporter.Run(runCtx)
 	restartRequested := make(chan struct{})
 	var restartOnce sync.Once
 	options.restartForUpdate = func() {
@@ -970,4 +993,18 @@ func recordThroughputOnce(configPath, historyPath string, status func() (stats.R
 	if err := recordThroughput(historyPath, name, report.PeakBPS, report.PeakAt); err != nil {
 		log.Printf("guardian_throughput_record_failed server=%q err=%v", name, err)
 	}
+}
+
+// loadGuardianConfigOrDefault 读配置给问题上报用;读不到 / 解析不了就按默认值
+// (reports 开、端点默认)—— 那正是最该上报的时刻,而它自己不该因此消失。
+func loadGuardianConfigOrDefault(path string) *config.Config {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return &config.Config{}
+	}
+	cfg, err := config.Parse(data)
+	if err != nil {
+		return &config.Config{}
+	}
+	return cfg
 }

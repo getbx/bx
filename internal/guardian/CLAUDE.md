@@ -265,3 +265,30 @@ CLI `assembleClientStatusReportWithCoreForPlatform` 与菜单 `recoveryPresentat
   `recovery_incomplete`、`guardian_busy`(它们恰是最需要指引、按常规规则又会被省略码的场景)。
 - 能力值(`CapabilityRules`/`CapabilityLogs`/…)是跨语言契约:菜单按字面量门控,改了值菜单
   就永久看不见那一页而两侧都不报错(`TestLogsCapabilityIsDeclared` 那一类)。
+
+## 问题上报(`reporter.go`,2026-09-29,发送那一跳真机未验)
+
+所有者定的形状:「有问题肯定发给我」「尽量无感」—— 失败时攒一份**脱敏**包、落本地、经隧道
+POST 到维护者的收集端(`tools/reports-collector`,Cloudflare Worker → 私有仓库 issue)。
+设计 `docs/superpowers/specs/2026-09-29-bx-problem-reports-design.md`。改这块之前:
+- **只在 `Protection == Protected` 时发**(`flush` 第一句),否则只入队。直连 `*.workers.dev`
+  的 SNI 就是「这台机器装了 bx」的明文证据,而报告不急。发送用普通 `http.Client`,**刻意不用
+  DirectDialer** —— 要的正是经隧道。
+- **触发只有五类、全是失败**(`needsAttention` / `coreReportedStartFailure` / 路径恢复放弃 /
+  更新回滚 / pf 残留),签名是码不是文本;`Record` 在关着、限频不过、写不下来时安静返回,
+  上报**绝不许连累 Guardian 自己的事**。不发成功事件、不心跳、不定时。
+- **脱敏是 `report.Redact` 的构造性质**(`TestRedactedBundleCarriesNoAddressOrCredential`):
+  公网 IP → `<ip-N>`、链接与 `token=` → `<link>`/`<redacted>`、主机名 → `<host>`(白名单只有
+  bx 自己的端点);私网、TUN、fake-IP 保留(说的是拓扑不是身份);用户 `bypass:`/`rules:`
+  与应用名**根本不进包**。往包里加字段的人要回答「它经过 Redact 吗」。
+- **限频在本地记账**(`report.Store.Allow`:同签名 6 小时一次、每天 10 份),收集端再按
+  install_id 与来源 IP 各限一次。`install-id` 是随机 16 字节 hex,只用于归并。
+- **接线只在 RunDaemon**:`reporterOptionsFor(cfg)` 是纯组装点,`Protected`/`Doctor`/`LogTail`
+  闭包捕获**之后才赋值**的 `mgr`(reporter 先于 Manager 构造)。
+  `TestRunDaemonWiresTheReporterEndToEnd` 钉八个锚点与「`Run` 在 `mgr = manager` 之后」。
+- **`bx reports` / `bx reports show`**(`internal/cli/reports.go`)读同一个目录
+  (`TestReportsDirMatchesTheGuardiansStore`);`bx setup` 收尾那一句是默认开的唯一告知面
+  (`TestSetupPrintsTheReportsNoticeAfterEveryNextStep`);`reports: off` 全关、`reports_endpoint:`
+  可覆盖(`config.ReportsEnabled`)。
+- **真机未验**:经隧道那一跳、Worker 在真实 Cloudflare 上的限频、issue 归并、`bx reports` 的
+  输出。验收 `docs/acceptance-pending.md` A14。

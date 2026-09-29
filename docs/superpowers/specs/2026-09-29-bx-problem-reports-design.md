@@ -1,6 +1,6 @@
 # bx 问题上报:失败时自动、无感地把脱敏报告送到维护者手里(design)
 
-**状态:所有者 2026-09-28/29 定了形状,同日实施中。** 原话:「有问题肯定发给我,我才能改进
+**状态:所有者 2026-09-28/29 定了形状,同日实施完毕(收集端已部署并冒烟;客户端全套有守卫,经隧道那一跳真机未验,见 A14)。** 原话:「有问题肯定发给我,我才能改进
 bx 吧」「给用户看一遍,用户大概率不会看。但可以留存到本地……尽量这个过程要无感,用户需要的是
 稳定体验,而不是 bug 监察员」。
 
@@ -87,9 +87,9 @@ POST(`Content-Type: application/json`,≤ 64 KB,超时 15 s),`202` 即成功;`4x
 
 ## 默认开,怎么告知
 
-`bx setup` 结束时打一句:`Problem reports: when bx fails, it sends a redacted report to the bx
-maintainer (through the tunnel). Kept in /var/lib/bx/reports; turn off with reports: off.`
-README 的 Notes 段同一句。菜单里不常驻;Troubleshoot ▸ 里一行「Problem reports: N sent」
+`bx setup` 结束时打一句(`reportsNotice`,守卫 `TestReportsNoticeSaysWhereItGoesWhereItStaysAndHowToTurnItOff`):
+发去哪(维护者、只经隧道)、留在哪(目录 + `bx reports`)、怎么关(`reports: off`)。
+README 的 Notes 段同一句(`verify-macos-release.sh` 钉住)。菜单里不常驻;Troubleshoot ▸ 里一行「Problem reports: N sent」
 留给布局层再议。
 
 ## 不做

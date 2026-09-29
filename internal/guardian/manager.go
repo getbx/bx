@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/getbx/bx/internal/report"
+
 	"github.com/getbx/bx/internal/pfreset"
 	"github.com/getbx/bx/internal/protectionstate"
 	"github.com/getbx/bx/internal/supervisor"
@@ -278,6 +280,9 @@ type LegacyCoreLifecycle interface {
 }
 
 type ManagerOptions struct {
+	// Reporter 是问题上报(internal/guardian/reporter.go);nil = 没接线(测试环境),
+	// 所有钩子都对 nil 安全。
+	Reporter        *Reporter
 	Store           DesiredStore
 	Runner          CoreRunner
 	Health          HealthGate
@@ -315,6 +320,8 @@ type Manager struct {
 	statusMu          sync.RWMutex
 	store             DesiredStore
 	runner            CoreRunner
+	// reporter:失败时攒脱敏包(nil 安全)。
+	reporter *Reporter
 	// flushStalePF 在 fork Core 之前冲掉上一个 Core 留下的 bx pf anchor(internal/pfreset)。
 	// 做成字段只为让「真的在 fork 之前叫了」可测;生产接 pfreset.FlushStaleDarwin。
 	flushStalePF func(context.Context) (bool, error)
@@ -462,6 +469,7 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 		updateOperation: make(chan struct{}, 1),
 		store:           options.Store,
 		runner:          options.Runner,
+		reporter:        options.Reporter,
 		flushStalePF: func(ctx context.Context) (bool, error) {
 			return pfreset.FlushStaleDarwin(ctx, supervisor.PFTokenPath())
 		},
@@ -1397,6 +1405,9 @@ func (m *Manager) startCoreLockedWithBarrierRelease(ctx context.Context, release
 	if m.flushStalePF != nil {
 		if flushed, err := m.flushStalePF(ctx); flushed || err != nil {
 			log.Printf("guardian_pf_reset_stale flushed=%v err=%v", flushed, err)
+			if flushed {
+				m.reporter.Record("pf_residue", report.Failure{Code: "pf_residue"})
+			}
 		}
 	}
 	operationCtx, cancelOperation, err := m.reserveCleanup(ctx)
@@ -1573,6 +1584,7 @@ func (m *Manager) setProtectedStatus(phase Phase, pid int, version, lastError st
 	if m.dnsStatus.State != DNSManaged && m.dnsStatus.State != DNSNotNeeded {
 		return fmt.Errorf("cannot publish protected status with DNS state %q", m.dnsStatus.State)
 	}
+	m.reporter.Transition(string(ProtectionProtected), lastError)
 	m.setStatus(Status{
 		SchemaVersion: 1,
 		Desired:       DesiredOn,
@@ -2070,6 +2082,9 @@ func (m *Manager) barrierContextForRuntime(ctx context.Context, state supervisor
 }
 
 func (m *Manager) needsAttention(desired DesiredState, code string) {
+	// 问题上报:这是它最主要的触发点(所有失败码都从这里过)。nil 安全、限频在里面。
+	m.reporter.Transition(string(ProtectionNeedsAttention), code)
+	m.reporter.Record("attention:"+code, report.Failure{Code: code})
 	status := m.Status()
 	status.SchemaVersion = 1
 	status.Desired = desired

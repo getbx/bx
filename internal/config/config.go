@@ -101,6 +101,10 @@ type Config struct {
 	BrookSHA256 string            `yaml:"brook_sha256"` // 下载兜底时的校验(设了 brook_url 才用,强烈建议)
 	DataDir     string            `yaml:"data_dir"`     // 运行期数据目录;空=默认(linux/darwin /var/lib/bx、windows C:\ProgramData\bx)
 	Bypass      []string          `yaml:"bypass"`       // 路由层绕过 tun 的网段(内网/管理网,保 SSH)
+	// Reports:问题上报(2026-09-29)。空/`on` = 开(所有者定的「无感」默认),`off` = 关;
+	// 别的值加载期报错。ReportsEndpoint 覆盖收集端(空 = 内置的 workers.dev 地址)。
+	Reports         string `yaml:"reports"`
+	ReportsEndpoint string `yaml:"reports_endpoint"`
 	// Egress 是具名出口清单。空 = 没有这个功能在用(绝大多数配置)。
 	Egress        []Egress `yaml:"egress"`
 	Global        bool     `yaml:"global"`         // 全局模式:除 bypass/用户 direct 规则外,一切(含中国)走代理
@@ -159,6 +163,9 @@ func Parse(b []byte) (*Config, error) {
 		// 负数 owner_uid 是手改配置的错误:转 uint32 会成巨值、授权不到任何真实用户。
 		// 显式拒绝(防 int→uint32 脚枪),正常由 bx setup 写正整数或省略(0=root-only)。
 		return nil, fmt.Errorf("config: owner_uid 不能为负: %d", c.OwnerUID)
+	}
+	if err := validateReports(&c); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
 	}
 	if err := c.resolveServers(); err != nil {
 		return nil, err
@@ -351,4 +358,17 @@ func parseHostOverrides(hosts map[string]string) (map[string]netip.Addr, error) 
 // 失败——错误信息可读、进程不重启、不会陷入死循环。
 func (c *Config) HostOverrides() (map[string]netip.Addr, error) {
 	return parseHostOverrides(c.Hosts)
+}
+
+// ReportsEnabled:`reports:` 缺席或 `on` 都是开;只有 `off` 关。
+func (c *Config) ReportsEnabled() bool { return c.Reports != "off" }
+
+// validateReports 在加载期把认不出的 `reports:` 值挡下来 —— 悄悄当开正是这类开关最坏的失效。
+func validateReports(c *Config) error {
+	switch c.Reports {
+	case "", "on", "off":
+		return nil
+	default:
+		return fmt.Errorf("reports: %q is not one of on / off", c.Reports)
+	}
 }

@@ -487,3 +487,25 @@ func TestParseRejectsDotsOnlyHostKey(t *testing.T) {
 		t.Fatal("仅有点号的域名必须报错")
 	}
 }
+
+// 问题上报的两个键(2026-09-29):`reports: off` 关掉(缺席 = 开,所有者定的「无感」默认);
+// `reports_endpoint:` 覆盖收集端。别的写法(`reports: maybe`)在加载期报错,不悄悄当开。
+func TestReportsKeysDefaultOnAndParse(t *testing.T) {
+	cfg, err := Parse([]byte("server: brook://example\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ReportsEnabled() || cfg.ReportsEndpoint != "" {
+		t.Fatalf("absent keys must mean on + default endpoint, got %v %q", cfg.ReportsEnabled(), cfg.ReportsEndpoint)
+	}
+	cfg, err = Parse([]byte("server: brook://example\nreports: off\nreports_endpoint: https://collector.example/v1/reports\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ReportsEnabled() || cfg.ReportsEndpoint != "https://collector.example/v1/reports" {
+		t.Fatalf("reports: off must turn it off, got %v %q", cfg.ReportsEnabled(), cfg.ReportsEndpoint)
+	}
+	if _, err := Parse([]byte("server: brook://example\nreports: maybe\n")); err == nil {
+		t.Fatal("an unrecognised reports value must be a load-time error, not silently on")
+	}
+}

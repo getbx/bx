@@ -7,6 +7,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/getbx/bx/internal/report"
+
 	"github.com/getbx/bx/internal/corestartfailure"
 	"github.com/getbx/bx/internal/supervisor"
 )
@@ -270,5 +272,10 @@ func coreStartFailureLastError(reported string) string {
 // 用户读到的那句话。由 TestUpHandsTheReaderThisSpawnsProcessAndAPreForkInstant
 // 钉住**递过去的那两个值**,不是「这次调用发生过」。
 func (m *Manager) coreReportedStartFailure(ctx context.Context, process Process, since time.Time) string {
-	return m.runner.StartFailureCode(ctx, process, since)
+	code := m.runner.StartFailureCode(ctx, process, since)
+	if code != "" {
+		// 问题上报:Core 自己说出的起不来的原因(全是码)。
+		m.reporter.Record("corestart:"+code, report.Failure{Code: code})
+	}
+	return code
 }

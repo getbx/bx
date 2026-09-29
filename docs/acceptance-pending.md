@@ -252,6 +252,25 @@ ProxyJump 跳板、连的是 bx 自己的 VPS 的 22141 端口 —— 服务器�
 8. 若第 2 步日志显示 `loading the reset rules` 失败,先怀疑 anchor 落点(spec 第三点):
    `sudo pfctl -s Anchors` 看 `com.apple/*` 下有没有 `250.bx`。
 
+### A14. 问题上报(2026-09-29)—— 第一份报告真的到了 issue 里吗
+
+Guardian 在五类失败上写 `/var/lib/bx/reports/<时刻>-<签名>.json`,保护开着时经隧道 POST 到
+收集端,收集端在私有仓库 `getbx/bx-reports` 建或追加 issue。**agent 能判的**(包的形状、脱敏、
+限频、接线)全有守卫;**只有真机能答的**是「经隧道那一跳」与「Cloudflare 上那个 Worker 收到
+真实流量之后的行为」。
+
+前提:装上含这一功能的版本,`bx status` Protected。
+1. `sudo bx reports` 应说「No problem reports」(健康机器一份都不该有)。
+2. 制造一次会触发的失败,最便宜的是 B2 那条(改坏 server 链接 → `bx up` 起不来 → 恢复)。
+   之后 `sudo bx reports` 应列出一份 `corestart:…` 或 `attention:…`,状态 `pending`。
+3. 保护恢复后等最多 5 分钟(或看 Guardian 日志端点里 `guardian_report_sent`);再 `sudo bx reports`
+   应变成 `sent`。**保护没恢复它就一直 `pending`,那是设计**。
+4. `sudo bx reports show <name>`:里面**不许**有你的服务器 IP / 域名 / 链接 / bypass 网段
+   (应是 `<ip-1>`、`<host>`、`<link>`);私网与 `198.51.100.x` 可以在。
+5. 到 `github.com/getbx/bx-reports/issues` 看:标题 `[<签名>] bx <版本> on darwin`,标签 `auto`。
+   同一签名第二次应是评论追加、标题计数 +1,而不是第二个 issue。
+6. 对照:`reports: off` 写进配置、重启 Guardian 之后重做第 2 步,目录里不许多出文件。
+
 ## B. 要制造一次故障(每条都会真的动网络,自己挑时间)
 
 ### B1. 段重置 —— 2026-09-13 刚修的那个,**唯一没被任何真机证据覆盖的新代码**

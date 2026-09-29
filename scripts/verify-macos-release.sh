@@ -87,6 +87,8 @@ grep -qF "protection is restarted after you confirm" "$RELEASE_DIR/README.txt" |
 grep -qF "Install bx" "$RELEASE_DIR/README.txt" || fail "README missing Install bx menu note"
 grep -qF "sudo bx uninstall" "$RELEASE_DIR/README.txt" || fail "README missing uninstall pointer"
 grep -qF "Run install.sh as your normal macOS user" "$RELEASE_DIR/README.txt" || fail "README missing non-root install note"
+grep -qF "sends a redacted report to the bx maintainer" "$RELEASE_DIR/README.txt" || fail "README missing the problem-reports disclosure"
+grep -qF "off with reports: off" "$RELEASE_DIR/README.txt" || fail "README missing how to turn problem reports off"
 
 grep -qF "app-install --app-source" "$RELEASE_DIR/install.sh" || fail "install.sh missing app-install invocation"
 

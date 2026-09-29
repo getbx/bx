@@ -21,6 +21,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getbx/bx/internal/report"
+
 	"github.com/getbx/bx/internal/dirsync"
 	"github.com/getbx/bx/internal/install"
 	"github.com/getbx/bx/internal/runtimedir"
@@ -916,6 +918,10 @@ func (m *Manager) saveUpdatePhase(transaction *Transaction, phase Phase, lastErr
 }
 
 func (m *Manager) finishUpdate(transaction *Transaction, prepared PreparedUpdate, outcome Phase) error {
+	if outcome == PhaseRolledBack {
+		// 问题上报:一次更新回滚就是维护者最该知道的那类事。
+		m.reporter.Record("update:rolled_back", report.Failure{Code: "rolled_back", Stage: string(transaction.Phase), ErrorCode: transaction.LastError})
+	}
 	receipt := Receipt{
 		TransactionID: transaction.ID, FromVersion: transaction.FromVersion, ToVersion: transaction.ToVersion,
 		AssetDigest: transaction.AssetDigest, Outcome: outcome, CompletedAt: time.Now().UTC(),

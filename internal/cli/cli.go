@@ -135,6 +135,7 @@ func New() *cli.App {
 			}},
 			{Name: "status", Usage: "show the status panel", Flags: statusFlags(), Action: statusAction},
 			{Name: "logs", Category: "Diagnose", Usage: "show the client log", Flags: logsFlags(), Action: logsAction},
+			reportsCommand(),
 			{Name: "link", Usage: "generate a bx:// link", ArgsUsage: "<internal-link>", Hidden: true, Action: linkAction},
 			{Name: "blink", Usage: "re-wrap an internal transport link as bx://", ArgsUsage: "<link> [link2 ...]", Hidden: true, Action: linkAction},
 			{Name: "darwin-plan", Usage: "print the macOS routing dry-run plan (changes nothing)", Hidden: true, Flags: darwinPlanFlags(), Action: darwinPlanAction},
@@ -3424,6 +3425,7 @@ func setupAction(c *cli.Context) error {
 			return fmt.Errorf("setting the default start-at-boot: %w", err)
 		}
 		fmt.Printf("✅ Config written to %s, and Guardian now points at the unified runtime. Next: "+elevate.Prefix+"bx up\n", cfgPath)
+		fmt.Println(reportsNotice())
 		return nil
 	}
 	if unifiedLayoutDegraded() {
@@ -3440,6 +3442,7 @@ func setupAction(c *cli.Context) error {
 		return fmt.Errorf("setting the default start-at-boot: %w", err)
 	}
 	fmt.Printf("✅ bx installed at %s, config written to %s, service installed. Next: "+elevate.Prefix+"bx up\n", install.BinPath, cfgPath)
+	fmt.Println(reportsNotice())
 	return nil
 }
 

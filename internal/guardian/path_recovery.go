@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getbx/bx/internal/report"
+
 	"github.com/getbx/bx/internal/observe"
 	"github.com/getbx/bx/internal/supervisor"
 )
@@ -374,6 +376,11 @@ attempts:
 				m.pathRecoveryActive = false
 				m.pathRecoveryResolveOff = false
 				m.pathRecoveryMu.Unlock()
+				if result.State == "failed" {
+					// 问题上报:路径恢复到此放弃(不再重试)。
+					m.reporter.Record("recovery:"+result.Stage+":"+result.ErrorCode,
+						report.Failure{Code: "recovery_failed", Stage: result.Stage, ErrorCode: result.ErrorCode})
+				}
 				return
 			}
 		}
