@@ -8,3 +8,9 @@
 *.out
 .env
 .worktrees/
+
+# iOS dev build: generated libbox config carries the server link (a credential); libbox is built from sing-box source
+apps/ios/Dev/
+apps/ios/Frameworks/
+apps/ios/*.xcodeproj/
+apps/ios/build/

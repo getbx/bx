@@ -1,0 +1,55 @@
+# XcodeGen spec for the bx iOS dev build (phase 2: no UI, driven by scripts/ios-dev.sh).
+# The generated .xcodeproj, the libbox framework and the Dev config are not committed.
+name: BxiOS
+options:
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: XXXXXXXXXX
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.0.1"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  BxApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+      - path: Dev
+        type: folder
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.getbx.bx.ios
+        PRODUCT_NAME: bx
+        CODE_SIGN_ENTITLEMENTS: App/App.entitlements
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: bx
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+    dependencies:
+      - target: BxTunnel
+        embed: true
+  BxTunnel:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Tunnel
+    info:
+      path: Tunnel/Info.plist
+      properties:
+        CFBundleDisplayName: bx tunnel
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.getbx.bx.ios.tunnel
+        CODE_SIGN_ENTITLEMENTS: Tunnel/Tunnel.entitlements
+    dependencies:
+      - framework: Frameworks/Libbox.xcframework
+        embed: false
+      - sdk: libresolv.tbd
+      - sdk: UIKit.framework # libbox references UIApplication background-task symbols
