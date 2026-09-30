@@ -165,3 +165,19 @@ udp UNCONN 0 0 *:443 *:* users:(("sing-box",pid=1082,fd=8))`
 		t.Fatalf("a login session is not a service: %q", u)
 	}
 }
+
+// enable-sync must not install anything when the restart check refuses: "Nothing was changed" has to be true.
+func TestEnableSyncInstallsNothingWhenTheServerCheckRefuses(t *testing.T) {
+	installed := false
+	_, err := enableSync(
+		func() (string, error) { return "", errors.New("tcp/8444 is held by nginx. Nothing was changed") },
+		func() error { installed = true; return nil },
+	)
+	if err == nil || installed {
+		t.Fatalf("err=%v installed=%v: the store was installed although the server check refused", err, installed)
+	}
+	msg, err := enableSync(func() (string, error) { return "✓ Hardened", nil }, func() error { installed = true; return nil })
+	if err != nil || !installed || !strings.Contains(msg, "Rule sync is on") {
+		t.Fatalf("happy path: msg=%q err=%v installed=%v", msg, err, installed)
+	}
+}

@@ -49,19 +49,33 @@ func serverEnableSyncCommand() *cli.Command {
 			if err != nil {
 				return err
 			}
-			if err := install.WriteSyncStoreUnit(bin + " server sync-store"); err != nil {
-				return err
+			msg, err := enableSync(
+				func() (string, error) { return hardenServerConfig(serverSingboxPath, systemServerHost{}) },
+				func() error {
+					if err := install.WriteSyncStoreUnit(bin + " server sync-store"); err != nil {
+						return err
+					}
+					return install.EnableSyncStore()
+				},
+			)
+			if msg != "" {
+				fmt.Println(msg)
 			}
-			if err := install.EnableSyncStore(); err != nil {
-				return fmt.Errorf("the sync store unit is written but did not start: %w", err)
-			}
-			msg, err := hardenServerConfig(serverSingboxPath, systemServerHost{})
-			if err != nil {
-				return fmt.Errorf("the sync store is running, but refreshing the server's routing failed: %w", err)
-			}
-			fmt.Println(msg)
-			fmt.Printf("✓ Rule sync is on: the store listens on %s and is reachable only through your tunnel.\n", policysync.StoreAddr)
-			return nil
+			return err
 		},
 	}
+}
+
+// enableSync 先刷新服务端路由(它会先查、重启后确认、失败放回原配置),再装存储。
+// 顺序是承重的:路由那步拒绝时它说「什么都没改」,那句话必须是真的 —— 先装存储就不是了。
+// 路由先放行 127.0.0.1:51781 而存储还没起,只是一个暂时连不上的端口,不暴露任何东西。
+func enableSync(hardenRoute func() (string, error), installStore func() error) (string, error) {
+	msg, err := hardenRoute()
+	if err != nil {
+		return "", err
+	}
+	if err := installStore(); err != nil {
+		return msg, fmt.Errorf("the server's routing is ready, but the sync store did not start: %w", err)
+	}
+	return msg + "\n" + fmt.Sprintf("✓ Rule sync is on: the store listens on %s and is reachable only through your tunnel.", policysync.StoreAddr), nil
 }
