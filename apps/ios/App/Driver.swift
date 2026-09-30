@@ -89,6 +89,22 @@ struct Driver {
                 }
                 out["state_after_on"] = "\(await controller.state)"
                 out["error_after_on"] = await controller.lastError ?? ""
+                // Rule sync: the pull starts when protection comes on; wait for its verdict, then ask
+                // Explain with the policy the tunnel now runs — and with the defaults, for contrast.
+                let rulesDeadline = Date().addingTimeInterval(20)
+                while await controller.rules == .defaults(.notCheckedYet), Date() < rulesDeadline {
+                    try await Task.sleep(nanoseconds: 200_000_000)
+                }
+                out["rules"] = "\(await controller.rules)"
+                let running = try ExplainInputs.load(fixture: false, policy: await controller.policyJSON)
+                let fallback = try ExplainInputs.load(fixture: false)
+                var asked: [String: String] = [:]
+                for target in ["www.apple.com", "www.icloud.com"] {
+                    let r = try running.explain(target)
+                    let d = try fallback.explain(target)
+                    asked[target] = "\(r.verdict) via \(r.rule ?? "-") (defaults: \(d.verdict))"
+                }
+                out["explain"] = asked
                 try await Task.sleep(nanoseconds: 1_500_000_000)
                 out["probe"] = await Probe.run()
                 out["expect"] = expectation()
