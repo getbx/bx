@@ -1,6 +1,6 @@
 # 规则同步:经用户自己的服务器,不要账号(design)
 
-**状态:所有者 2026-09-29 定了方向并过目。第 1 步(服务端加固)已随 v0.4.18 发布并装上所有者的 VPS;第 2 步(`internal/policysync` + `internal/syncstore` + `bx server enable-sync`)2026-09-30 落地;第 3 步(Mac 推送,`internal/guardian/policysync_push.go`)同日落地:每分钟 stat 一次配置、摘要变了才经隧道推,只在保护开着时;`bx status` 那一行留到第 4 步和手机那半一起做。第 4 步(iPhone 拉取、「规则」那一行、Explain 用同一份)同日落地,待发版后在所有者的 VPS 与 cc 上端到端验证。**
+**状态:所有者 2026-09-29 定了方向并过目。第 1 步(服务端加固)已随 v0.4.18 发布并装上所有者的 VPS;第 2 步(`internal/policysync` + `internal/syncstore` + `bx server enable-sync`)2026-09-30 落地;第 3 步(Mac 推送,`internal/guardian/policysync_push.go`)同日落地:每分钟 stat 一次配置、摘要变了才经隧道推,只在保护开着时;`bx status` 那一行留到第 4 步和手机那半一起做。第 4 步(iPhone 拉取、「规则」那一行、Explain 用同一份)同日落地;**2026-09-30 真机端到端已验**(v0.4.21,所有者的 Mac → VPS → iPhone cc):Mac 升级后即推(10:56:23Z),手机打开保护后拉到同一版本、显示「来自 Mac」;`www.icloud.com` 按同步到的 `*.icloud.com` 走隧道而默认规则会直连 —— 手机真的在用 Mac 的规则;出口 == VPS;关保护、忘记服务器后不留 VPN 配置。**
 
 ## 一句话
 

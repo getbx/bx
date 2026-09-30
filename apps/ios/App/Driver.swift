@@ -109,6 +109,12 @@ struct Driver {
                 out["probe"] = await Probe.run()
                 out["expect"] = expectation()
                 await controller.setProtection(false)
+                // stopVPNTunnel returns before iOS has disconnected; the state follows the status
+                // notification, so wait for it the same way as for "on" above.
+                let offDeadline = Date().addingTimeInterval(10)
+                while await controller.state == .on, Date() < offDeadline {
+                    try await Task.sleep(nanoseconds: 200_000_000)
+                }
                 out["state_after_off"] = "\(await controller.state)"
                 await controller.forgetServer()
                 out["forgot"] = true
