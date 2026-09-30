@@ -91,6 +91,9 @@ func run(cfgPath, outDir string) error {
 		return err
 	}
 	files["policy.json"] = policyJSON
+	// The app scenario pastes this exactly as a person would; it is the credential, and it stays
+	// in this gitignored, 0600 directory like the configs above that already embed it.
+	files["server-link.txt"] = []byte(cfg.Server + "\n")
 	files["china_domain.txt"] = embedded.ChinaDomain()
 	files["china_cidr.txt"] = embedded.ChinaCIDR()
 	uid, gid := sudoOwner()

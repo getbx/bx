@@ -6,7 +6,7 @@
 #   scripts/ios-dev.sh build             构建 libbox(若缺)、生成工程、签名构建、装到手机
 #   scripts/ios-dev.sh snapshot          模拟器里用合成夹具(不含你的规则)截 Explain 页,浅色/深色各一张
 #   scripts/ios-dev.sh uitest            模拟器里跑 Explain 页的 XCUITest(合成夹具),每项封顶 2 分钟
-#   scripts/ios-dev.sh run <scenario>    connect | deadserver | armed | armedbroken | explain --target <x> | stop | remove
+#   scripts/ios-dev.sh run <scenario>    connect | deadserver | armed | armedbroken | app | explain --target <x> | stop | remove
 #
 # 设备:BX_IOS_DEVICE(默认第一台已连接的真机)。
 set -euo pipefail
@@ -56,8 +56,13 @@ snapshot)
 	out=apps/ios/build-sim/snapshots
 	mkdir -p "$out"
 	for look in light dark; do
+		xcrun simctl ui "$sim" appearance "$look"
+		for home in "" --fixture-server; do
+			xcrun simctl launch --terminate-running-process "$sim" com.getbx.bx.ios --fixture $home >/dev/null
+			sleep 3
+			xcrun simctl io "$sim" screenshot "$out/home-${look}${home:+-server}.png" >/dev/null 2>&1
+		done
 		for target in www.apple.com https://chat.example.net/c/1 2001:db8::1; do
-			xcrun simctl ui "$sim" appearance "$look"
 			xcrun simctl launch --terminate-running-process "$sim" com.getbx.bx.ios --fixture --target "$target" >/dev/null
 			sleep 3
 			name="$(echo "$target" | tr -c 'A-Za-z0-9' '_')"

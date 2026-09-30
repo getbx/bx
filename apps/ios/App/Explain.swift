@@ -26,8 +26,8 @@ struct ExplainInputs {
     let chinaDomain: String
     let chinaCIDR: String
 
-    // `fixture` is synthetic and committed (apps/ios/App/Fixtures); otherwise the Mac-generated
-    // Dev folder, which carries the owner's real rules and is never committed.
+    // `fixture` is synthetic and committed (apps/ios/App/Fixtures); otherwise the policy the
+    // phone actually runs.
     static func load(fixture: Bool) throws -> ExplainInputs {
         func read(_ url: URL?) throws -> String {
             guard let url else { throw DriverError("missing explain input") }
@@ -40,14 +40,9 @@ struct ExplainInputs {
                 chinaCIDR: read(Bundle.main.url(forResource: "demo-china-cidr", withExtension: "txt"))
             )
         }
-        guard let dev = Bundle.main.url(forResource: "Dev", withExtension: nil) else {
-            throw DriverError("no Dev folder in the app bundle; run scripts/ios-dev.sh config first")
-        }
-        return try ExplainInputs(
-            policy: read(dev.appendingPathComponent("policy.json")),
-            chinaDomain: read(dev.appendingPathComponent("china_domain.txt")),
-            chinaCIDR: read(dev.appendingPathComponent("china_cidr.txt"))
-        )
+        // The phone runs the desktop's default routing (bxkit.Configure), so Explain asks the
+        // same policy about the same bundled lists — the two cannot disagree.
+        return ExplainInputs(policy: BxkitDefaultPolicy(), chinaDomain: BundledLists.chinaDomain, chinaCIDR: BundledLists.chinaCIDR)
     }
 
     func explain(_ target: String) throws -> ExplainAnswer {

@@ -7,6 +7,7 @@ enum Scenario: String {
     case armed        // kill-switch on (includeAllNetworks + on-demand), real server: normal traffic still works
     case armedbroken  // kill-switch on, tunnel cannot start: nothing may reach even our own server
     case explain      // headless explain: --target <x> [--fixture]
+    case app          // the home screen's own path: paste link → protection on → probe → off → forget
     case stop
     case remove       // delete the VPN configuration from Settings (run at the end of every session)
 
@@ -74,6 +75,27 @@ struct Driver {
                 }
                 out["box_log_tail"] = boxLogTail(lines: 12)
                 out["disarm"] = await disarm()
+            case .app:
+                guard let dev = Bundle.main.url(forResource: "Dev", withExtension: nil),
+                      let link = try? String(contentsOf: dev.appendingPathComponent("server-link.txt"), encoding: .utf8)
+                else { throw DriverError("no Dev/server-link.txt; run scripts/ios-dev.sh config first") }
+                let controller = await MainActor.run { TunnelController(fixture: false) }
+                try await MainActor.run { try controller.importLink(link) }
+                out["server_host"] = await controller.serverHost ?? ""
+                await controller.setProtection(true)
+                let deadline = Date().addingTimeInterval(20)
+                while await controller.state != .on, Date() < deadline {
+                    try await Task.sleep(nanoseconds: 200_000_000)
+                }
+                out["state_after_on"] = "\(await controller.state)"
+                out["error_after_on"] = await controller.lastError ?? ""
+                try await Task.sleep(nanoseconds: 1_500_000_000)
+                out["probe"] = await Probe.run()
+                out["expect"] = expectation()
+                await controller.setProtection(false)
+                out["state_after_off"] = "\(await controller.state)"
+                await controller.forgetServer()
+                out["forgot"] = true
             case .explain:
                 let target = BxApp.value(after: "--target", in: args) ?? ""
                 let answer = try ExplainInputs.load(fixture: args.contains("--fixture")).explain(target)

@@ -29,6 +29,23 @@
 - **v6 在手机上一律拒绝**(mobileconfig 的前导规则),explain 如实说 blocked;tun 必须同时占住
   v4 与 v6 默认路由,否则 iOS 把 v6 从物理网卡放出去。
 
+## App 本身(第四期,2026-09-29)
+
+- **配置在手机上生成**:粘贴 `bx://` / `vless://` → `bxkit.Configure`(`mobile/bxkit/configure.go`)出完整
+  libbox 配置;出站走 `internal/singboxout`(与桌面同一个生成器,原在 tunnel,为此下沉成纯包)。
+  这一期只有 reality,别的链接**按类型拒绝并说出来**,不生成一份连不上的配置。
+- **手机跑的是桌面 `bx setup` 的默认路由**(split:china 直连,其余走隧道;china 列表从包里读,
+  即仓库内嵌那两份)。Explain 用 `BxkitDefaultPolicy` 问同一份意图 —— 两者不会不一致。
+  **Mac 上用户自己加的规则不在手机上**;要不要同步是待所有者拍板的产品决定(文件导出那条 L1
+  已被否)。
+- **链接是凭据,放钥匙串**(`App/LinkStore.swift`,本机、首次解锁后可读);扩展从不读它,只跑 App
+  写进共享容器的配置(`Shared/SharedPaths.swift` 的 `writeStartConfig`,按需重连不带启动参数)。
+- **保护开着就开 kill-switch**(`App/TunnelController.swift`);关的时候**先关按需再停**,否则 iOS
+  立刻把隧道拉回来。
+- **`--fixture` 不碰任何持久存储**(不写共享设置、不写钥匙串、不调 VPN 框架):一次写了共享设置的
+  fixture 运行让下一次启动「已有服务器」,UI 测试当场抓到。
+- 真机上走屏幕同一条路径的无头场景:`scripts/ios-dev.sh run app`(导入 → 开 → 探测 → 关 → 忘掉)。
+
 ## 界面的检查
 
 `scripts/ios-dev.sh snapshot` 出截图给人(和 agent)看;`scripts/ios-dev.sh uitest` 跑 `UITests/` 里的

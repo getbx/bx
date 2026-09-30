@@ -25,8 +25,13 @@ targets:
     platform: iOS
     sources:
       - path: App
+      - path: Shared
       - path: Dev
         type: folder
+        buildPhase: resources
+      - path: ../../internal/embedded/assets/china_domain.txt
+        buildPhase: resources
+      - path: ../../internal/embedded/assets/china_cidr4.txt
         buildPhase: resources
     settings:
       base:
@@ -47,6 +52,7 @@ targets:
     platform: iOS
     sources:
       - path: Tunnel
+      - path: Shared
     info:
       path: Tunnel/Info.plist
       properties:
