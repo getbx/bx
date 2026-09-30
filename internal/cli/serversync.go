@@ -55,7 +55,7 @@ func serverEnableSyncCommand() *cli.Command {
 			if err := install.EnableSyncStore(); err != nil {
 				return fmt.Errorf("the sync store unit is written but did not start: %w", err)
 			}
-			msg, err := hardenServerConfig(serverSingboxPath, install.RestartServer)
+			msg, err := hardenServerConfig(serverSingboxPath, systemServerHost{})
 			if err != nil {
 				return fmt.Errorf("the sync store is running, but refreshing the server's routing failed: %w", err)
 			}
