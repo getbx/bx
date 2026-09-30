@@ -63,6 +63,9 @@ struct MainView: View {
         if fixture, args.contains("--fixture-synced") {
             controller.fixtureSynced(policy: #"{"version":1780000000,"updated_at":"2026-09-30T08:00:00Z","global":false,"direct":["*.apple.com"],"proxy":[]}"#)
         }
+        if fixture, let opened = BxApp.value(after: "--fixture-open", in: args) {
+            controller.receive(link: opened)
+        }
         if fixture, args.contains("--fixture-on") {
             Task { await controller.setProtection(true) }
         }
@@ -86,6 +89,12 @@ struct MainView: View {
             )
             .tabItem { Label("Explain", systemImage: "questionmark.circle") }
             .tag(1)
+        }
+        // bx:// links (the Mac's "Add to iPhone" QR, scanned with the Camera) land here; the home
+        // screen confirms before anything changes.
+        .onOpenURL { url in
+            tunnel.receive(link: url.absoluteString)
+            tab = 0
         }
     }
 }

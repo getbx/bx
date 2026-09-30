@@ -120,3 +120,37 @@ func TestIOSAppIconHasEveryAppearanceAndNoAlpha(t *testing.T) {
 		t.Fatal("project.yml 没有指名 AppIcon:图标编进去了,桌面上仍是白板")
 	}
 }
+
+// bx:// 链接能从 App 外面打开 App(Mac 部署窗口给的二维码,用相机一扫)。**任何网页都能打开一个
+// bx:// 链接**,所以外面来的链接只许走「先确认、说出地址」那一条路:onOpenURL 只交给 receive(link:),
+// 而 receive 自己不许 importLink —— 真正换服务器只在用户点了 Add 之后(acceptIncoming)。
+func TestIOSOpenedLinksAreConfirmedBeforeUse(t *testing.T) {
+	read := func(parts ...string) string {
+		b, err := os.ReadFile(filepath.Join(append([]string{"..", "..", "apps", "ios"}, parts...)...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	app := read("App", "BxApp.swift")
+	i := strings.Index(app, ".onOpenURL")
+	if i < 0 {
+		t.Fatal("BxApp.swift 没有 .onOpenURL —— 守卫的锚点漂了")
+	}
+	handler := app[i:min(len(app), i+300)]
+	if !strings.Contains(handler, "receive(link:") || strings.Contains(handler, "importLink") {
+		t.Fatalf("外面打开的链接没有先确认:%s", handler)
+	}
+	ctl := read("App", "TunnelController.swift")
+	j := strings.Index(ctl, "func receive(link raw: String)")
+	k := strings.Index(ctl, "func acceptIncoming()")
+	if j < 0 || k < 0 || k < j {
+		t.Fatal("读不出 receive / acceptIncoming —— 守卫的锚点漂了")
+	}
+	if strings.Contains(ctl[j:k], "importLink") {
+		t.Fatal("receive 直接 importLink 了 —— 一个网页就能悄悄换掉用户的服务器")
+	}
+	if !strings.Contains(read("project.yml"), "CFBundleURLSchemes: [bx]") {
+		t.Fatal("没有注册 bx:// —— 相机扫了二维码打不开 App")
+	}
+}

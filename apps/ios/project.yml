@@ -49,6 +49,11 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        # bx:// links open the app (the Mac's "Add to iPhone" QR, scanned with the Camera). The app
+        # always asks before using one — see TunnelController.receive.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.getbx.bx.ios
+            CFBundleURLSchemes: [bx]
         # Rule sync reads http://sync.bx.internal/…: a reserved name the phone's own config routes
         # into the tunnel (onto the VPS's loopback store). Plain HTTP is fine there — it only ever
         # travels inside the tunnel, and the payload is sealed by policysync anyway.

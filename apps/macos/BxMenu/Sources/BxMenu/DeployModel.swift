@@ -240,13 +240,16 @@ struct DeployResultPresentation: Equatable {
     /// 这台 Mac 上 bx 还没配过:把这两条交给首次设置。
     var setUpLink: String?
     var setUpUDP: String?
+    /// 手机那一半:结果页的「Add to iPhone…」把它画成二维码,给 iPhone 相机扫(bx:// 会打开 App,
+    /// App 先确认、说出地址)。只在用户点那一下时才画 —— 二维码就是凭据。
+    var phoneLink: String?
 }
 
 func deployResult(_ e: DeployEvent) -> DeployResultPresentation {
     if e.notSetUp == true, let link = e.link {
         return .init(headline: L("The server is ready"),
                      detail: L("bx is not set up on this Mac yet. Set it up with this server now?"),
-                     canOpenServers: false, setUpLink: link, setUpUDP: e.udp)
+                     canOpenServers: false, setUpLink: link, setUpUDP: e.udp, phoneLink: link)
     }
     let name = e.name ?? e.host ?? ""
     var detail: String
@@ -275,5 +278,5 @@ func deployResult(_ e: DeployEvent) -> DeployResultPresentation {
     } else {
         headline = L("“{0}” is ready", name)
     }
-    return .init(headline: headline, detail: detail, canOpenServers: true)
+    return .init(headline: headline, detail: detail, canOpenServers: true, phoneLink: e.link)
 }

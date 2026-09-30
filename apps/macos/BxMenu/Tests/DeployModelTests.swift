@@ -96,7 +96,16 @@ struct DeployModelTests {
         expect(!r.canOpenServers, "nothing was added, nothing to open")
     }
 
+    // After a deploy the phone can join by scanning a QR of the link — the link rides along.
+    static func testTheResultCarriesTheLinkForThePhone() {
+        let r = deployResult(DeployEvent(event: "done", name: "tokyo", added: true, link: "bx://A"))
+        expect(r.phoneLink == "bx://A", "phone link: \(String(describing: r.phoneLink))")
+        let none = deployResult(DeployEvent(event: "done", name: "tokyo", added: true))
+        expect(none.phoneLink == nil, "no link, no phone button")
+    }
+
     static func main() {
+        testTheResultCarriesTheLinkForThePhone()
         testArgumentsCarryTheFlagNeverThePassword()
         testValidationCatchesTypos()
         testNameRulesMatchTheConfig()

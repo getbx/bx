@@ -60,6 +60,11 @@ struct HomeView: View {
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .principal) { BrandTitle() } }
+            .sheet(item: $tunnel.incoming) { pending in
+                IncomingLinkSheet(pending: pending, current: tunnel.serverHost,
+                                  onAdd: { tunnel.acceptIncoming() },
+                                  onCancel: { tunnel.incoming = nil })
+            }
             .sheet(isPresented: $showingAdd) {
                 NavigationStack {
                     Form {
@@ -227,5 +232,49 @@ struct AddServerForm: View {
         } catch {
             problem = error.localizedDescription
         }
+    }
+}
+
+/// "Add this server?" for a link opened from outside the app. It names the address, says what it
+/// replaces, and does nothing until Add is tapped.
+struct IncomingLinkSheet: View {
+    let pending: TunnelController.IncomingLink
+    let current: String?
+    let onAdd: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if let host = pending.host {
+                    Section {
+                        LabeledContent("Address", value: host)
+                            .accessibilityIdentifier("incoming.host")
+                    } footer: {
+                        if let current, current != host {
+                            Text("This replaces your current server, \(current). Protection turns off while it changes.")
+                                .accessibilityIdentifier("incoming.replaces")
+                        } else {
+                            Text("Only add servers you set up yourself or got from someone you trust — all your traffic will go through it.")
+                        }
+                    }
+                } else if let problem = pending.problem {
+                    Section { Text(problem).foregroundStyle(.orange) }
+                }
+            }
+            .navigationTitle(pending.host == nil ? "Link Not Supported" : "Add This Server?")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: onCancel).accessibilityIdentifier("incoming.cancel")
+                }
+                if pending.host != nil {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Add", action: onAdd).accessibilityIdentifier("incoming.add")
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }

@@ -33,6 +33,17 @@ final class TunnelController: ObservableObject {
     @Published private(set) var serverHost: String?
     @Published private(set) var rules: RulesSource = .defaults(.notCheckedYet)
     @Published var lastError: String?
+    /// A bx:// link opened from outside the app (the Camera's QR scan, a message). It is **never**
+    /// applied directly: the home screen asks first, naming the address — any web page can open a
+    /// bx:// URL, and it must not be able to swap someone's server silently.
+    @Published var incoming: IncomingLink?
+
+    struct IncomingLink: Identifiable, Equatable {
+        let id = UUID()
+        let link: String
+        let host: String?
+        let problem: String?
+    }
 
     /// The policy the phone runs and Explain asks: synced if we have it, otherwise the defaults.
     var policyJSON: String { syncedPolicy ?? BxkitDefaultPolicy() }
@@ -69,6 +80,32 @@ final class TunnelController: ObservableObject {
     var isOn: Bool { state == .on || state == .connecting }
 
     /// Paste → configure → store. Refuses links the phone cannot run, saying which kinds work.
+    /// Something opened bx with a link. Work out the address (no side effects) and ask.
+    func receive(link raw: String) {
+        let link = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard link.lowercased().hasPrefix("bx://") || link.lowercased().hasPrefix("vless://") else { return }
+        var error: NSError?
+        let json = BxkitConfigure(link, BundledLists.chinaDomain, BundledLists.chinaCIDR, &error)
+        struct Preview: Decodable { let server_host: String }
+        if error == nil, let p = try? JSONDecoder().decode(Preview.self, from: Data(json.utf8)) {
+            incoming = IncomingLink(link: link, host: p.server_host, problem: nil)
+        } else {
+            incoming = IncomingLink(link: link, host: nil,
+                                    problem: "This link cannot be used on iPhone. bx on iPhone runs reality servers.")
+        }
+    }
+
+    func acceptIncoming() {
+        guard let pending = incoming, pending.problem == nil else { incoming = nil; return }
+        incoming = nil
+        do {
+            if isOn { Task { await setProtection(false) } }
+            try importLink(pending.link)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
     func importLink(_ raw: String) throws {
         let link = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         // A new server means a new link, and rules synced for the old link do not apply to it.

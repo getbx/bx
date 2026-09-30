@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 
 /// 「Set Up a New Server」窗口。
 ///
@@ -23,6 +24,8 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
     private var closeButton: NSButton?
     private var actionButton: NSButton?
     private var primaryButton: NSButton?
+    private var phoneButton: NSButton?
+    private var phoneLink: String?
 
     private var progress = DeployProgress()
     private var running = false
@@ -190,13 +193,16 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
         self.details = details
         stack.addFullWidthRow(details)
 
+        let phone = menuButton(L("Add to iPhone…"), target: self, action: #selector(showPhoneCode))
+        phone.isHidden = true
+        phoneButton = phone
         let close = menuButton(L("Close"), target: self, action: #selector(closeOrCancel))
         let action = menuButton("", target: self, action: #selector(runAction))
         action.isHidden = true
         // 这扇窗口唯一的 primary:部署本身。
         let primary = menuButton(L("Set Up Server"), weight: .primary, target: self, action: #selector(run))
         closeButton = close; actionButton = action; primaryButton = primary
-        stack.addFullWidthRow(menuButtonRow([close, action, primary], trailing: true))
+        stack.addFullWidthRow(menuButtonRow([phone, close, action, primary], trailing: true))
 
         guard let content = window.contentView else { return window }
         content.addSubview(stack)
@@ -270,6 +276,8 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
         setUpUDP = nil
         sawFinalEvent = false
         finishedOK = false
+        phoneLink = nil
+        phoneButton?.isHidden = true
         running = true
         setForm(enabled: false)
         progressBox?.isHidden = false
@@ -293,6 +301,23 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
         // 跑着的时候关窗 = 取消;不许留一个看不见的部署在后台跑。
         if running { onCancel?() }
         return true
+    }
+
+    /// 把刚装好那台的链接画成二维码,给 iPhone 相机扫(bx:// 会打开 bx App,App 先确认、说出地址)。
+    ///
+    /// **二维码就是凭据**:只在用户点这一下时画,旁边说清楚「看得到它的人都能用你的服务器」;
+    /// 不存盘、不进剪贴板。
+    @objc private func showPhoneCode() {
+        guard let link = phoneLink, let image = deployQRImage(link) else { return }
+        let alert = NSAlert()
+        alert.messageText = L("Scan with your iPhone's Camera")
+        alert.informativeText = L("Point the Camera at this code and tap the bx link that appears. The bx app on iPhone asks before adding the server. Anyone who can see this code can use your server — close it when you are done.")
+        let view = NSImageView(image: image)
+        view.frame = NSRect(x: 0, y: 0, width: 240, height: 240)
+        view.imageScaling = .scaleProportionallyUpOrDown
+        alert.accessoryView = view
+        alert.addButton(withTitle: L("Done"))
+        if let window { alert.beginSheetModal(for: window) } else { alert.runModal() }
     }
 
     // MARK: 渲染
@@ -321,6 +346,8 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
         let r = deployResult(event)
         setUpLink = r.setUpLink
         setUpUDP = r.setUpUDP
+        phoneLink = r.phoneLink
+        phoneButton?.isHidden = r.phoneLink == nil
         showResult(headline: r.headline, message: r.detail, details: nil)
         if r.setUpLink != nil {
             setButtons(close: L("Later"), action: L("Set Up bx With This Server"), primary: nil)
@@ -372,4 +399,18 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
             field?.isEnabled = enabled
         }
     }
+}
+
+/// 一个清晰的黑白二维码(纠错等级 M;按整数倍放大,边缘不糊,手机好扫)。
+func deployQRImage(_ text: String) -> NSImage? {
+    guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+    filter.setValue(Data(text.utf8), forKey: "inputMessage")
+    filter.setValue("M", forKey: "inputCorrectionLevel")
+    guard let code = filter.outputImage else { return nil }
+    let scale = max(1, (480 / code.extent.width).rounded(.down))
+    let scaled = code.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+    let rep = NSCIImageRep(ciImage: scaled)
+    let image = NSImage(size: rep.size)
+    image.addRepresentation(rep)
+    return image
 }

@@ -52,6 +52,13 @@
   的 ATS 例外只给这个保留名(那条流量只在隧道里走,内容本身也封过)。
 - 真机上走屏幕同一条路径的无头场景:`scripts/ios-dev.sh run app`(导入 → 开 → 探测 → 关 → 忘掉)。
 
+## 从外面打开的 bx:// 链接(2026-09-30)
+
+App 注册了 `bx://`:Mac 部署窗口的「Add to iPhone」二维码用相机一扫就打开 App。**任何网页都能打开
+一个 bx:// 链接**,所以外面来的链接只走 `TunnelController.receive` → 一张说出地址(以及它要替换的
+那台)的确认单 → 用户点 Add 才 `importLink`。`TestIOSOpenedLinksAreConfirmedBeforeUse` 钉住
+onOpenURL 不直接导入;UI 测试用 `--fixture-open <链接>` 模拟打开。
+
 ## 图标与盾(2026-09-30)
 
 - **图标从设计包合成,不是直接搬**:包里的 app 图标母版是 macOS 那种「方块里画一块圆角砖」,

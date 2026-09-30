@@ -582,4 +582,7 @@ let zhHansTranslations: [String: String] = [
     "Close": "关闭",
     "Try Again": "重试",
     "bx is not installed at {0}.": "bx 没有安装在 {0}。",
+    "Add to iPhone…": "加到 iPhone…",
+    "Scan with your iPhone's Camera": "用 iPhone 相机扫一扫",
+    "Point the Camera at this code and tap the bx link that appears. The bx app on iPhone asks before adding the server. Anyone who can see this code can use your server — close it when you are done.": "把相机对准这个码,点出现的 bx 链接。iPhone 上的 bx 会先问你再添加服务器。看得到这个码的人都能用你的服务器 —— 用完就关掉。",
 ]

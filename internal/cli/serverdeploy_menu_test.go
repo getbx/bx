@@ -272,7 +272,8 @@ func TestMenuDeployReportsStepsThenDoneAndNeverThePassword(t *testing.T) {
 	}
 	var last deployEvent
 	json.Unmarshal([]byte(lines[len(lines)-1]), &last)
-	if last.Event != "done" || !last.Added || last.Name == "" || last.Probe == nil {
+	// The link comes back so the window can offer "Add to iPhone" (a QR for the phone's Camera).
+	if last.Event != "done" || !last.Added || last.Name == "" || last.Probe == nil || !strings.HasPrefix(last.Link, "bx://") {
 		t.Fatalf("last event = %s", lines[len(lines)-1])
 	}
 }

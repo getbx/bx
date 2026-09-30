@@ -76,4 +76,35 @@ final class HomeScreenUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [expectation(for: protected, evaluatedWith: onState)], timeout: 5), .completed, "status says \(onState.label)")
         XCTAssertEqual(on.buttons["home.protection"].label, "Turn Off")
     }
+
+    // A bx:// link opened from the Camera's QR scan (or anywhere else) must be confirmed on screen,
+    // with the address, before anything changes — any web page can open a bx:// URL.
+    static let incoming = "bx://eyJ2IjoxLCJ0cmFuc3BvcnQiOiJyZWFsaXR5IiwibGluayI6InZsZXNzOi8vMTExMTExMTEtMjIyMi0zMzMzLTQ0NDQtNTU1NTU1NTU1NTU1QDIwMy4wLjExMy40NDo0NDM_c2VjdXJpdHk9cmVhbGl0eVx1MDAyNnNuaT13d3cuY2xvdWRmbGFyZS5jb21cdTAwMjZwYms9QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQVx1MDAyNnNpZD1hYmNkXHUwMDI2ZnA9Y2hyb21lXHUwMDI2Zmxvdz14dGxzLXJwcngtdmlzaW9uIn0"
+
+    func testAnOpenedLinkIsAddedOnlyAfterConfirmingTheAddress() {
+        let app = launch(["--fixture-open", Self.incoming])
+        let prompt = app.descendants(matching: .any)["incoming.host"]
+        XCTAssertTrue(prompt.waitForExistence(timeout: 10), "no confirmation for an opened link")
+        let shown = prompt.label + " " + ((prompt.value as? String) ?? "")
+        XCTAssertTrue(shown.contains("203.0.113.44"), "the confirmation does not name the server: \(shown)")
+        XCTAssertFalse(app.descendants(matching: .any)["home.server"].exists, "the server was added before confirming")
+        app.buttons["incoming.add"].tap()
+        let server = app.descendants(matching: .any)["home.server"]
+        XCTAssertTrue(server.waitForExistence(timeout: 10))
+        let text = server.label + " " + ((server.value as? String) ?? "")
+        XCTAssertTrue(text.contains("203.0.113.44"), "server row says \(text)")
+    }
+
+    func testAnOpenedLinkSaysItReplacesTheCurrentServer() {
+        let app = launch(["--fixture-server", "--fixture-open", Self.incoming])
+        let note = app.descendants(matching: .any)["incoming.replaces"]
+        XCTAssertTrue(note.waitForExistence(timeout: 10), "no replace notice")
+        XCTAssertTrue(note.label.contains("203.0.113.9"), "replace notice says \(note.label)")
+        app.buttons["incoming.cancel"].tap()
+        let server = app.descendants(matching: .any)["home.server"]
+        XCTAssertTrue(server.waitForExistence(timeout: 10))
+        let text = server.label + " " + ((server.value as? String) ?? "")
+        XCTAssertTrue(text.contains("203.0.113.9"), "cancel changed the server: \(text)")
+    }
 }
+

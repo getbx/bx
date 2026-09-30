@@ -302,9 +302,11 @@ func runDeployForMenu(opts deployOptions, deps deployDeps, lister deployLister, 
 			return fmt.Errorf("adding it to your server list: %w", err)
 		}
 		send(deployEvent{Event: "step", Step: "test"})
+		// 链接也交回菜单:结果页的「Add to iPhone」要把它画成二维码给手机相机扫。
+		// 它只经这条 stdout 管道到菜单进程的内存里,不落盘。
 		done = deployEvent{
 			Event: "done", Name: rec.Name, Host: rec.Host, Added: true,
-			Replaced: rec.Replaced, Current: rec.Current, Probe: rec.Probe,
+			Replaced: rec.Replaced, Current: rec.Current, Probe: rec.Probe, Link: main, UDP: udp,
 		}
 		return nil
 	}
