@@ -39,3 +39,30 @@ func TestRunDaemonWiresTheReporterEndToEnd(t *testing.T) {
 		t.Fatal("reporter.Run starts before the manager is assigned; Protected() would read a nil manager forever")
 	}
 }
+
+// 规则同步的推送同样只在 RunDaemon 接线;少了它,Mac 从不推,手机永远只有默认规则,而推送器
+// 自己的单测照样全绿。
+func TestRunDaemonStartsThePolicyPusher(t *testing.T) {
+	src, err := os.ReadFile("daemon.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	start := strings.Index(body, "func RunDaemon(")
+	if start < 0 {
+		t.Fatal("RunDaemon not found in daemon.go")
+	}
+	fn := body[start:]
+	for _, anchor := range []string{
+		"pusher := newPolicyPusher(options.ConfigPath,",
+		"mgr.Status().Protection == ProtectionProtected",
+		"go pusher.Run(runCtx, nil)",
+	} {
+		if !strings.Contains(fn, anchor) {
+			t.Fatalf("RunDaemon no longer contains %q — the Mac never pushes its rules", anchor)
+		}
+	}
+	if strings.Index(fn, "go pusher.Run(runCtx, nil)") < strings.Index(fn, "mgr = manager") {
+		t.Fatal("the pusher starts before the manager is assigned; its protected() check would read a nil manager")
+	}
+}

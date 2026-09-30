@@ -1,6 +1,6 @@
 # 规则同步:经用户自己的服务器,不要账号(design)
 
-**状态:所有者 2026-09-29 定了方向并过目。第 1 步(服务端加固)已随 v0.4.18 发布并装上所有者的 VPS;第 2 步(`internal/policysync` + `internal/syncstore` + `bx server enable-sync`)2026-09-30 落地;第 3、4 步待做。**
+**状态:所有者 2026-09-29 定了方向并过目。第 1 步(服务端加固)已随 v0.4.18 发布并装上所有者的 VPS;第 2 步(`internal/policysync` + `internal/syncstore` + `bx server enable-sync`)2026-09-30 落地;第 3 步(Mac 推送,`internal/guardian/policysync_push.go`)同日落地:每分钟 stat 一次配置、摘要变了才经隧道推,只在保护开着时;`bx status` 那一行留到第 4 步和手机那半一起做。第 4 步待做。**
 
 ## 一句话
 

@@ -555,6 +555,9 @@ func RunDaemon(ctx context.Context, options DaemonOptions) error {
 	runCtx, stopForRestart := context.WithCancel(ctx)
 	defer stopForRestart()
 	go reporter.Run(runCtx)
+	// 规则同步第三步:规则变了就经隧道推到用户自己的 VPS(policysync_push.go)。只在保护开着时发。
+	pusher := newPolicyPusher(options.ConfigPath, func() bool { return mgr.Status().Protection == ProtectionProtected })
+	go pusher.Run(runCtx, nil)
 	restartRequested := make(chan struct{})
 	var restartOnce sync.Once
 	options.restartForUpdate = func() {
