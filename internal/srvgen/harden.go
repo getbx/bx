@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+
+	"github.com/getbx/bx/internal/policysync"
 )
 
 // HardenedRoute 是服务端 sing-box 的路由:**不许经隧道去 VPS 自己的回环、内网与链路本地地址**。
@@ -15,10 +17,19 @@ import (
 // **先 resolve 再判 IP**:目的地是域名时(`localhost`,或一个解析到私网的名字),不解析的话
 // IP 规则根本看不见它。harden_test.go 用真 sing-box 对 127.0.0.1 与 localhost 各验一遍,并带
 // 「没有这套路由时连得上」的对照组。
-func HardenedRoute() map[string]any {
+func HardenedRoute() map[string]any { return hardenedRouteWithStorePort(policysync.StorePort) }
+
+// HardenedRouteForTest is HardenedRoute with the sync-store exception on another port, so tests
+// running in parallel packages do not fight over the one fixed port.
+func HardenedRouteForTest(storePort int) map[string]any { return hardenedRouteWithStorePort(storePort) }
+
+func hardenedRouteWithStorePort(storePort int) map[string]any {
 	return map[string]any{
 		"rules": []any{
 			map[string]any{"action": "resolve"},
+			// 唯一的例外:VPS 上只听回环的规则同步存储(policysync.StorePort)。持有链接的设备经
+			// 隧道存取自己那团加密规则;别的回环端口照样拒。
+			map[string]any{"ip_cidr": []any{"127.0.0.1/32"}, "port": []any{storePort}, "action": "route", "outbound": "direct"},
 			map[string]any{"ip_is_private": true, "action": "reject"},
 			map[string]any{"ip_cidr": []any{
 				"0.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "100.64.0.0/10",

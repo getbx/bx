@@ -306,6 +306,45 @@ func WriteServerUnit(execStart string) error {
 	return writeUnitFile(serverUnitPath, ServerUnitText(execStart))
 }
 
+// SyncStoreServiceName 是规则同步存储(bx server sync-store)的 systemd service 名。
+const SyncStoreServiceName = "bx-sync-store.service"
+
+const syncStoreUnitPath = "/etc/systemd/system/bx-sync-store.service"
+
+// SyncStoreUnitText:与 bx server 同一套加固(只写 /var/lib/bx),另加只许回环 —— 它本就只听
+// 127.0.0.1,这里让 systemd 再兜一层。
+func SyncStoreUnitText(execStart string) string {
+	return `[Unit]
+Description=bx rule sync store (loopback only)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=` + execStart + `
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/bx
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target
+`
+}
+
+// WriteSyncStoreUnit 写入同步存储的 unit 并 daemon-reload。需 root。
+func WriteSyncStoreUnit(execStart string) error {
+	return writeUnitFile(syncStoreUnitPath, SyncStoreUnitText(execStart))
+}
+
+// EnableSyncStore 启动同步存储并设为开机自启。
+func EnableSyncStore() error { return runSystemctl("enable", "--now", SyncStoreServiceName) }
+
 // ShareServiceName 返回命名分享对应的 systemd service 名。
 func ShareServiceName(name string) string { return "bx-share-" + name + ".service" }
 

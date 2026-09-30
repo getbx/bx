@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/getbx/bx/internal/embedded"
+	"github.com/getbx/bx/internal/policysync"
 	"github.com/getbx/bx/internal/socks5"
 	"github.com/getbx/bx/internal/srvgen"
 )
@@ -33,11 +34,17 @@ func TestHardenedServerRefusesLoopbackPrivateAndMetadataDestinations(t *testing.
 		t.Fatalf("control: without the hardened route the loopback service should be reachable (that is the bug); got %q, %v", body, err)
 	}
 
-	hardened := runServer(t, bin, srvgen.HardenedRoute())
+	storeAddr := startLoopbackService(t) // stands in for the sync store, on a free port
+	_, storePortText, _ := net.SplitHostPort(storeAddr)
+	hardened := runServer(t, bin, srvgen.HardenedRouteForTest(atoi(storePortText)))
 	for _, target := range []string{secret, strings.Replace(secret, "127.0.0.1", "localhost", 1)} {
 		if body, err := fetchVia(hardened, target); err == nil {
 			t.Errorf("hardened server still reaches %s (got %q)", target, body)
 		}
+	}
+	// 唯一的例外:规则同步存储的那个回环端口,经隧道必须够得着(别的回环端口上面已经验过是拒的)。
+	if body, err := fetchVia(hardened, storeAddr); err != nil || body != "vps-local-secret" {
+		t.Errorf("hardened server does not let the sync store through: %q, %v", body, err)
 	}
 	for _, target := range []string{"169.254.169.254:80", "10.0.0.1:80", "192.168.1.1:80"} {
 		if _, err := fetchVia(hardened, target); err == nil {
@@ -107,7 +114,12 @@ func singbox(t *testing.T) string {
 
 func startLoopbackService(t *testing.T) string {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	return startLoopbackServiceOn(t, "127.0.0.1:0")
+}
+
+func startLoopbackServiceOn(t *testing.T, addr string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,4 +192,12 @@ func atoi(s string) int {
 	var n int
 	_, _ = fmt.Sscanf(s, "%d", &n)
 	return n
+}
+
+// The route servers actually get opens the one exception on the real store port, not another.
+func TestTheRealRouteOpensTheRealStorePort(t *testing.T) {
+	b, _ := json.Marshal(srvgen.HardenedRoute())
+	if !strings.Contains(string(b), fmt.Sprintf(`"port":[%d]`, policysync.StorePort)) {
+		t.Fatalf("HardenedRoute does not open policysync.StorePort:\n%s", b)
+	}
 }
