@@ -50,7 +50,7 @@ func serverEnableSyncCommand() *cli.Command {
 				return err
 			}
 			msg, err := enableSync(
-				func() (string, error) { return hardenServerConfig(serverSingboxPath, systemServerHost{}) },
+				func() (string, error) { return hardenServerConfig(serverSingboxPath, serverRestartHost) },
 				func() error {
 					if err := install.WriteSyncStoreUnit(bin + " server sync-store"); err != nil {
 						return err

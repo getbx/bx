@@ -1103,7 +1103,9 @@ func realityShare(name, dir string, mainCfg serverConfig) (serverConfig, error) 
 	if err != nil {
 		return serverConfig{}, err
 	}
-	if err := os.WriteFile(serverSingboxPath, sb2, 0o600); err != nil {
+	// 先让服务器真的带着这个用户回来,**再**写分享记录:服务器没回来时配置已被放回原样,
+	// 留一条记录就是一条用不了的链接(known-gaps A14)。
+	if err := rewriteServerConfigSafely(serverSingboxPath, sb, sb2, serverRestartHost); err != nil {
 		return serverConfig{}, err
 	}
 	rec := serverConfig{
@@ -1112,9 +1114,6 @@ func realityShare(name, dir string, mainCfg serverConfig) (serverConfig, error) 
 	}
 	if err := writeServerConfig(shareConfigPath(dir, name), rec, true); err != nil {
 		return serverConfig{}, err
-	}
-	if err := install.RestartServer(); err != nil {
-		return rec, fmt.Errorf("the user was added and written to disk, but restarting the server failed (it takes effect on the next start): %w", err)
 	}
 	return rec, nil
 }
@@ -1351,16 +1350,13 @@ func revokeShare(name, dir string) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(serverSingboxPath, sb2, 0o600); err != nil {
+		// 服务器带着新配置回来了才删记录;没回来时原配置已被放回(那个用户仍然有效),
+		// 记录也就留着 —— 两边始终一致,可以再试一次。
+		if err := rewriteServerConfigSafely(serverSingboxPath, sb, sb2, serverRestartHost); err != nil {
 			return err
 		}
-		// 先删 share 记录(配置已落盘),再重启——这样即便重启失败,记录与配置仍一致、可重试,
-		// 不会留下一条「config 已删 uuid 但记录还在」的不可撤销僵尸。
 		if err := os.Remove(shareConfigPath(dir, name)); err != nil && !os.IsNotExist(err) {
 			return err
-		}
-		if err := install.RestartServer(); err != nil {
-			return fmt.Errorf("the revocation was written to disk, but restarting the server failed (it takes effect on the next start): %w", err)
 		}
 		return nil
 	}

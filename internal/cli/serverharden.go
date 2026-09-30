@@ -33,7 +33,7 @@ func serverHardenCommand() *cli.Command {
 }
 
 func serverHardenAction(_ *cli.Context) error {
-	msg, err := hardenServerConfig(serverSingboxPath, systemServerHost{})
+	msg, err := hardenServerConfig(serverSingboxPath, serverRestartHost)
 	if msg != "" {
 		fmt.Println(msg)
 	}
@@ -93,20 +93,34 @@ func hardenServerConfig(path string, host serverHost) (string, error) {
 	if !changed {
 		return "✓ This server is already hardened; nothing changed.", nil
 	}
-	listeners, err := srvgen.Listeners(raw)
-	if err != nil {
-		return "", fmt.Errorf("reading %s: %w", path, err)
-	}
-	if err := checkBeforeServerRestart(listeners, host); err != nil {
+	if err := rewriteServerConfigSafely(path, raw, patched, host); err != nil {
 		return "", err
-	}
-	if err := os.WriteFile(path, patched, 0o600); err != nil {
-		return "", err
-	}
-	if err := restartAndConfirm(listeners, host); err != nil {
-		return "", restorePreviousServerConfig(path, raw, listeners, host, err)
 	}
 	return "✓ Hardened: connections through the tunnel can no longer reach this server's local services, private network or cloud metadata address. Keys and users are unchanged.", nil
+}
+
+// serverRestartHost 是改服务端配置之后重启用的那台机器;测试换成假的。
+var serverRestartHost serverHost = systemServerHost{}
+
+// rewriteServerConfigSafely 是**所有**改 bx-server 配置再重启的路径共用的那一段:
+// 重启前查(别的 sing-box 在重试、端口被别人占着 → 拒绝,什么都不写)→ 写 → 重启并确认端口
+// 回到 bx-server 手里 → 没回来就放回原配置再启动。harden、enable-sync、share、撤销分享都走它
+// (2026-09-30 那次断网之后;A14 把 share/撤销也接上)。
+func rewriteServerConfigSafely(path string, previous, next []byte, host serverHost) error {
+	listeners, err := srvgen.Listeners(previous)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", path, err)
+	}
+	if err := checkBeforeServerRestart(listeners, host); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, next, 0o600); err != nil {
+		return err
+	}
+	if err := restartAndConfirm(listeners, host); err != nil {
+		return restorePreviousServerConfig(path, previous, listeners, host, err)
+	}
+	return nil
 }
 
 func checkBeforeServerRestart(listeners []srvgen.Listener, host serverHost) error {
