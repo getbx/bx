@@ -1171,6 +1171,13 @@ func TestManagerPathRecoveryOnPreservingTransitionDoesNotReplayManualRecovery(t 
 	if got := core.callCount(); got != 1 {
 		t.Fatalf("Core calls after startup recovery = %d, want no implicit manual replay", got)
 	}
+	// Recover cancels the in-flight manual recovery and returns; the canceled run records its
+	// failure from its own goroutine a moment later. Reading it synchronously bet on scheduling
+	// (it lost once on a busy CI runner, 2026-09-30: state still "running"), so wait for it.
+	eventually(t, func() bool {
+		got := env.manager.CurrentPathRecovery()
+		return got.ID == first.ID && got.State == "failed"
+	})
 	if got := env.manager.CurrentPathRecovery(); got.ID != first.ID || got.State != "failed" {
 		t.Fatalf("interrupted manual recovery = %+v, want canceled failure for %q", got, first.ID)
 	}
