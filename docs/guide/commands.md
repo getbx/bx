@@ -22,7 +22,7 @@
 | `sudo bx server ui --host <host>` | 启动只监听本机的极简 Web UI |
 | `sudo bx server uninstall` | 卸载 bx server 服务 |
 | `sudo bx setup <client-link>` | 客户端首次配置 |
-| `sudo bx server deploy <user@host>` | 从本机把 bx server 装到一台裸 VPS(走系统 ssh,**bx 不经手凭据**);加 `--name <名字>` 装好后自动加进本机清单(**不会切换当前出口**) |
+| `sudo bx server deploy <user@host>` | 从本机把 bx server 装到一台裸 VPS(走系统 ssh);加 `--name <名字>` 装好后自动加进本机清单(**不会切换当前出口**)。`--ssh-port` 指定 SSH 端口。菜单里的「Set Up a New Server」窗口用的是同一条命令:密码在窗口里填,只在内存里用一次、不保存 |
 | `bx server list` | 列出已配置的服务器:出口主机、UDP 出口、以及观测到的峰值吞吐(带年龄) |
 | `bx server list --test` | 顺便逐台测延迟与可达性。**它会往隧道外面发包**,所以是显式的一下,不是默认行为 |
 | `sudo bx server use <name>` | 换到清单里的另一台:武装 → 等新隧道健康 → 确认;起不来就地回滚 |

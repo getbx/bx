@@ -505,8 +505,19 @@ func guardianHTTPClient(socketPath string) *http.Client {
 // 一条不用中途弹提权框的路**;而 Guardian 那一侧的门是 authorizeOwnerPeer,
 // 与菜单换服务器同一道。
 func (c *Client) AddServer(ctx context.Context, name, link, udp string) error {
+	return c.serverLinkAction(ctx, "add", name, link, udp)
+}
+
+// ReplaceServer 就地换掉清单里 name 那一台的链接,**不动 current**(见 replaceServerLink)。
+// 部署到一台已经在清单里的机器(重装过的 VPS)时用它,而不是再加一条指向同一台的重复项。
+// 空 udp 在 replace 里读作「保持不变」。
+func (c *Client) ReplaceServer(ctx context.Context, name, link, udp string) error {
+	return c.serverLinkAction(ctx, "replace", name, link, udp)
+}
+
+func (c *Client) serverLinkAction(ctx context.Context, action, name, link, udp string) error {
 	payload, err := json.Marshal(map[string]string{
-		"action": "add", "name": name, "link": link, "udp": udp,
+		"action": action, "name": name, "link": link, "udp": udp,
 	})
 	if err != nil {
 		return err

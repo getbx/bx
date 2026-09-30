@@ -565,7 +565,7 @@ func TestEveryRemoteCommandGoesThroughSudoWhenNeeded(t *testing.T) {
 			}
 			return "" + elevate.Prefix + "bx setup 'bx://MAIN'", nil
 		},
-		remoteFetch:      func(string, string, bool, bool) error { return nil },
+		remoteFetch:      func(string, func(string) (string, error)) error { return nil },
 		fetchBinary:      func(string) (string, error) { return "/tmp/bx", nil },
 		writeLocalConfig: func(string) error { return nil },
 	})
@@ -604,7 +604,7 @@ func TestRootLoginDoesNotWrapInSudo(t *testing.T) {
 			}
 			return "" + elevate.Prefix + "bx setup 'bx://MAIN'", nil
 		},
-		remoteFetch:      func(string, string, bool, bool) error { return nil },
+		remoteFetch:      func(string, func(string) (string, error)) error { return nil },
 		fetchBinary:      func(string) (string, error) { return "/tmp/bx", nil },
 		writeLocalConfig: func(string) error { return nil },
 	})

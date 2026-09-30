@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,6 +19,7 @@ import (
 	"github.com/getbx/bx/internal/elevate"
 
 	"github.com/getbx/bx/internal/guardian"
+	"github.com/getbx/bx/internal/sshpass"
 	updatepkg "github.com/getbx/bx/internal/update"
 	"github.com/urfave/cli/v2"
 )
@@ -31,21 +35,34 @@ type deployOptions struct {
 	Force bool
 	// Name 非空时,装好之后把它加进本机服务器清单(经 Guardian,**不改 current**)。
 	Name string
+	// SSHOptions 加在每一条 ssh/scp 前面(连接复用、端口、known_hosts 策略)——
+	// 见 deploySSHOptions。放在一处,是因为漏掉任何一条调用,那一条就会再问一次密码
+	// 或连错端口,而前面每一步都成功。
+	SSHOptions []string
+	// Password 只在菜单那条路(--password-stdin)上有:非 root 登录时喂给远端的
+	// `sudo -S`。给 ssh 本身的那份走 internal/sshpass,不经这里。
+	Password string
 }
 
 // deployDeps 把所有会碰外界的东西注入进来,好让判定可测。
 //
-// **bx 不碰任何凭据**:run 走系统的 `ssh`/`scp`,密码、密钥、agent、known_hosts
-// 全由用户自己的 ssh 客户端处理。上一轮关于「留不留凭据」的争论,在这一层
-// 根本不存在 —— 我们从来没有拿到过它。
+// run 走系统的 `ssh`/`scp`。命令行那条路上密码、密钥、agent 全由 ssh 自己问;菜单那条路
+// (--password-stdin,2026-09-30 所有者定的)密码只在内存里,经 internal/sshpass 交给 ssh
+// 与远端 `sudo -S`,用完即丢,绝不写盘。
 type deployDeps struct {
 	run func(name string, args ...string) (string, error)
+	// runInput 与 run 相同,只是把 stdin 喂给它(远端 `sudo -S` 要密码时)。nil = 不支持。
+	runInput func(stdin, name string, args ...string) (string, error)
+	// step 报告进行到哪一步(菜单那条路逐步显示);nil = 不报。
+	step func(id string)
+	// out 是给人看的逐行说明;nil = 标准输出。菜单那条路把它关掉,只发 JSON 事件。
+	out io.Writer
 	// hasTTY 决定要不要给 ssh 加 -t(只有 sudo 可能问密码时才需要)。
 	hasTTY      bool
 	fetchBinary func(arch string) (localPath string, err error)
-	// remoteFetch 让远端自己把二进制取到 remoteUploadPaths 的临时路径。
-	// nil = 不试远端,直接本机下载(测试与降级用)。
-	remoteFetch      func(host, arch string, sudo, hasTTY bool) error
+	// remoteFetch 让远端自己把二进制取到 remoteUploadPaths 的临时路径;runRemote 是
+	// 已经带好 sudo / 连接参数的那一个。nil = 不试远端,直接本机下载(测试与降级用)。
+	remoteFetch      func(arch string, runRemote func(script string) (string, error)) error
 	writeLocalConfig func(link string) error
 }
 
@@ -127,8 +144,21 @@ func runServerDeploy(opts deployOptions, deps deployDeps) error {
 	if strings.TrimSpace(opts.Host) == "" {
 		return fmt.Errorf("the target host is missing (it looks like root@1.2.3.4)")
 	}
+	say := deps.out
+	if say == nil {
+		say = os.Stdout
+	}
+	step := func(id string) {
+		if deps.step != nil {
+			deps.step(id)
+		}
+	}
+	sshCall := func(extra ...string) []string {
+		return append(append([]string{}, opts.SSHOptions...), extra...)
+	}
+	step("connect")
 	// 一次往返同时问「我是谁」和「什么架构」—— 两个都决定后面怎么做。
-	probe, err := deps.run("ssh", opts.Host, "id -u; uname -m")
+	probe, err := deps.run("ssh", sshCall(opts.Host, "id -u; uname -m")...)
 	if err != nil {
 		return fmt.Errorf("could not connect to %s: %w", opts.Host, err)
 	}
@@ -144,38 +174,49 @@ func runServerDeploy(opts deployOptions, deps deployDeps) error {
 	if err != nil {
 		return err
 	}
+	// 非 root 且手里有密码(菜单那条路):sudo 从 stdin 读同一个密码,不需要终端。
+	sudoWithPassword := sudo && opts.Password != "" && deps.runInput != nil
 	if sudo {
-		fmt.Println("• The remote login is not root, so the rest runs under sudo")
-		if !deps.hasTTY {
+		fmt.Fprintln(say, "• The remote login is not root, so the rest runs under sudo")
+		if !deps.hasTTY && !sudoWithPassword {
 			// 没有终端就问不了密码 —— 与其让它挂住或吐一句无关的错误,
 			// 不如提前说清楚。
-			fmt.Println("  (there is no terminal here, so sudo will fail if it asks for a password — set up NOPASSWD, or re-run this from a terminal)")
+			fmt.Fprintln(say, "  (there is no terminal here, so sudo will fail if it asks for a password — set up NOPASSWD, or re-run this from a terminal)")
 		}
 	}
 	// runRemote 把「要不要 sudo」「要不要 TTY」收在一处 —— 散在各调用点就会
 	// 有某一条忘了包,而那条的失败方式极难查(前面都成功,只有写文件那步失败)。
 	runRemote := func(script string) (string, error) {
-		args := append(sshArgsFor(opts.Host, sudo, deps.hasTTY), remoteScript(script, sudo))
+		if sudoWithPassword {
+			args := sshCall(opts.Host, remoteScriptWithPassword(script))
+			return deps.runInput(opts.Password+"\n", "ssh", args...)
+		}
+		args := sshCall(append(sshArgsFor(opts.Host, sudo, deps.hasTTY), remoteScript(script, sudo))...)
 		return deps.run("ssh", args...)
 	}
+	scpUp := func(local, remote string) error {
+		_, err := deps.run("scp", sshCall(local, opts.Host+":"+remote)...)
+		return err
+	}
+	step("download")
 	upload, final := remoteUploadPaths()
 	// **先让远端自己下。** 它就在目的地那一侧:真机实测 8.36 MB/s,
 	// 而本机经隧道只有 17 KB/s(差 490 倍)。校验和仍然来自本机验过签的清单。
 	if deps.remoteFetch != nil {
-		err := deps.remoteFetch(opts.Host, arch, sudo, deps.hasTTY)
+		err := deps.remoteFetch(arch, runRemote)
 		switch {
 		case err == nil:
-			fmt.Println("• The remote host fetched the binary itself and it checks out")
+			fmt.Fprintln(say, "• The remote host fetched the binary itself and it checks out")
 		case !shouldFallBackToLocalUpload(err):
 			// 校验和不符 —— **绝不回落**。换条路再拿一遍只会掩盖问题。
 			return fmt.Errorf("the remote verification failed: %w", err)
 		default:
-			fmt.Printf("• The remote host could not fetch it (%v), so it is downloaded here and uploaded\n", err)
+			fmt.Fprintf(say, "• The remote host could not fetch it (%v), so it is downloaded here and uploaded\n", err)
 			local, ferr := deps.fetchBinary(arch)
 			if ferr != nil {
 				return fmt.Errorf("preparing the linux/%s bx binary: %w", arch, ferr)
 			}
-			if _, serr := deps.run("scp", local, opts.Host+":"+upload); serr != nil {
+			if serr := scpUp(local, upload); serr != nil {
 				return fmt.Errorf("uploading the binary: %w", serr)
 			}
 		}
@@ -184,10 +225,11 @@ func runServerDeploy(opts deployOptions, deps deployDeps) error {
 		if ferr != nil {
 			return fmt.Errorf("preparing the linux/%s bx binary: %w", arch, ferr)
 		}
-		if _, serr := deps.run("scp", local, opts.Host+":"+upload); serr != nil {
+		if serr := scpUp(local, upload); serr != nil {
 			return fmt.Errorf("uploading the binary: %w", serr)
 		}
 	}
+	step("install")
 	if _, err := runRemote(fmt.Sprintf("chmod +x %s && mv %s %s",
 		shellSingleQuoted(upload), shellSingleQuoted(upload), shellSingleQuoted(final))); err != nil {
 		return fmt.Errorf("putting the binary in place: %w", err)
@@ -208,20 +250,22 @@ func runServerDeploy(opts deployOptions, deps deployDeps) error {
 	if port <= 0 {
 		port = 443
 	}
+	step("firewall")
 	fwOut, err := runRemote(remoteFirewallCommand(port))
 	switch {
 	case err != nil:
-		fmt.Printf("⚠ The firewall port %d could not be opened automatically; if it is unreachable from outside, open it by hand: %v\n", port, err)
+		fmt.Fprintf(say, "⚠ The firewall port %d could not be opened automatically; if it is unreachable from outside, open it by hand: %v\n", port, err)
 	case strings.TrimSpace(fwOut) != "":
 		// **改了别人的防火墙就要说出来。** 静默修改系统状态,用户既无从复核也
 		// 无从撤销 —— 而这条命令的其余每一步都会打一行。
-		fmt.Printf("• %s\n", strings.TrimSpace(fwOut))
+		fmt.Fprintf(say, "• %s\n", strings.TrimSpace(fwOut))
 	default:
-		fmt.Println("• ufw is not enabled on the remote host, so no firewall was changed (if there is a cloud security group, remember to open that port)")
+		fmt.Fprintln(say, "• ufw is not enabled on the remote host, so no firewall was changed (if there is a cloud security group, remember to open that port)")
 	}
 	// 装完就启动 —— 一条命令该留下一台**在跑**的服务器,而不是一台装好没开的。
+	step("start")
 	if _, err := runRemote(shellSingleQuoted(final) + " server start"); err != nil {
-		fmt.Printf("⚠ The remote service did not start by itself; log in and run bx server start once: %v\n", err)
+		fmt.Fprintf(say, "⚠ The remote service did not start by itself; log in and run bx server start once: %v\n", err)
 	}
 	if udp != "" {
 		return deps.writeLocalConfig(main + " --udp " + udp)
@@ -247,6 +291,7 @@ func serverDeployAction(c *cli.Context) error {
 	if host == "" {
 		return errors.New("usage: bx server deploy <user@host>   (host may also be an alias from your ssh_config)")
 	}
+	menu := c.Bool("json")
 	opts := deployOptions{
 		Host:     host,
 		Protocol: c.String("protocol"),
@@ -255,14 +300,90 @@ func serverDeployAction(c *cli.Context) error {
 		Force:    c.Bool("force"),
 		Name:     strings.TrimSpace(c.String("name")),
 	}
-	fmt.Printf("• Target %s (bx never handles your SSH credentials — password, key and agent are all your system ssh's job)\n", host)
-	return runServerDeploy(opts, deployDeps{
-		run:              runDeployCommand,
-		hasTTY:           stdinIsTerminal(),
-		remoteFetch:      remoteFetchBinary,
-		fetchBinary:      fetchLinuxBinary,
-		writeLocalConfig: func(link string) error { return applyDeployedLink(link, opts.Name) },
+	if c.Bool("password-stdin") {
+		// 一行,来自菜单窗口。只在内存里,交给 ssh(sshpass)与远端 sudo -S,进程结束即丢。
+		line, err := readPasswordLine(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("reading the password from stdin: %w", err)
+		}
+		opts.Password = line
+	}
+	sshPort := c.Int("ssh-port")
+
+	controlDir, err := os.MkdirTemp("", "bxssh")
+	if err != nil {
+		return err
+	}
+	_ = os.Chmod(controlDir, 0o700)
+	knownHosts := ""
+	if menu {
+		if knownHosts, err = deployKnownHostsPath(); err != nil {
+			return err
+		}
+	}
+	opts.SSHOptions = deploySSHOptions(sshOptionParams{
+		Port: sshPort, ControlDir: controlDir,
+		KnownHosts: knownHosts, Password: opts.Password != "", Menu: menu,
 	})
+	defer func() {
+		// 收掉共用的那条连接,再删控制目录 —— 什么都不留下。
+		_ = exec.Command("ssh", append(append([]string{}, opts.SSHOptions...), "-O", "exit", host)...).Run()
+		os.RemoveAll(controlDir)
+	}()
+	if c.Bool("forget-host-key") && knownHosts != "" {
+		forgetDeployHostKey(knownHosts, host, sshPort)
+	}
+
+	runner := &deployRunner{interactive: !menu}
+	if opts.Password != "" {
+		self, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		pass, err := sshpass.Serve(opts.Password, self)
+		if err != nil {
+			return err
+		}
+		defer pass.Close()
+		runner.env = pass.Env()
+	}
+	var say io.Writer = os.Stdout
+	if menu {
+		say = io.Discard
+	}
+	deps := deployDeps{
+		run:      runner.run,
+		runInput: runner.runInput,
+		hasTTY:   !menu && stdinIsTerminal(),
+		remoteFetch: func(arch string, runRemote func(string) (string, error)) error {
+			return remoteFetchBinary(arch, runRemote, say)
+		},
+		fetchBinary: fetchLinuxBinary,
+	}
+	if menu {
+		enc := json.NewEncoder(os.Stdout)
+		if err := runDeployForMenu(opts, deps, guardian.NewClient(guardian.SocketPath), func(e deployEvent) { _ = enc.Encode(e) }); err != nil {
+			// 那一行 error 事件已经说清楚了;非零退出码给调用方判断用。
+			return cli.Exit("", 1)
+		}
+		return nil
+	}
+	fmt.Printf("• Target %s\n", host)
+	deps.writeLocalConfig = func(link string) error { return applyDeployedLink(link, opts.Name) }
+	return runServerDeploy(opts, deps)
+}
+
+// readPasswordLine 读一行(去掉行尾),不回显、不记录。
+func readPasswordLine(r io.Reader) (string, error) {
+	line, err := bufio.NewReader(r).ReadString('\n')
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+	line = strings.TrimRight(line, "\r\n")
+	if line == "" {
+		return "", errors.New("the password is empty")
+	}
+	return line, nil
 }
 
 // runDeployCommand 执行一条 ssh/scp。
@@ -443,6 +564,12 @@ func serverDeployFlags() []cli.Flag {
 		&cli.BoolFlag{Name: "force", Usage: "overwrite an existing server config on the remote host"},
 		// **给了名字就自动加进清单,但不换过去。** 换出口要用户在清单里显式点一下。
 		&cli.StringFlag{Name: "name", Usage: "add it to this machine's server list under this name once installed (your current exit does not change)"},
+		&cli.IntFlag{Name: "ssh-port", Usage: "the server's SSH port, if it is not 22"},
+		// 菜单窗口用的三个:密码从 stdin 来(不在命令行、不在环境变量里),进度逐行 JSON,
+		// 以及用户确认重装过之后忘掉旧指纹。
+		&cli.BoolFlag{Name: "password-stdin", Usage: "read the SSH password from the first line of stdin (used by the menu's Set Up a New Server window; never stored)"},
+		&cli.BoolFlag{Name: "json", Usage: "print progress as JSON lines (used by the menu)"},
+		&cli.BoolFlag{Name: "forget-host-key", Usage: "forget the fingerprint bx recorded for this server (after you reinstalled it)"},
 	}
 }
 
@@ -500,7 +627,7 @@ func shouldFallBackToLocalUpload(err error) bool {
 }
 
 // remoteFetchBinary 让远端自己下载并核对二进制。
-func remoteFetchBinary(host, arch string, sudo, hasTTY bool) error {
+func remoteFetchBinary(arch string, runRemote func(script string) (string, error), out io.Writer) error {
 	client := &http.Client{Transport: stallSafeTransport()}
 	tag, err := latestReleaseTag(client)
 	if err != nil {
@@ -514,11 +641,10 @@ func remoteFetchBinary(host, arch string, sudo, hasTTY bool) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("• Letting the remote host fetch %s (%s) itself; the checksum comes from the signed manifest read here\n", asset.Name, tag)
-	args := append(sshArgsFor(host, sudo, hasTTY), remoteScript(remoteFetchCommand(tag, asset), sudo))
-	out, err := runDeployCommand("ssh", args...)
+	fmt.Fprintf(out, "• Letting the remote host fetch %s (%s) itself; the checksum comes from the signed manifest read here\n", asset.Name, tag)
+	text, err := runRemote(remoteFetchCommand(tag, asset))
 	if err != nil {
-		return fmt.Errorf("%w: %s", err, strings.TrimSpace(out))
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(text))
 	}
 	return nil
 }
@@ -574,6 +700,13 @@ func remoteScript(script string, sudo bool) string {
 		return script
 	}
 	return "sudo sh -c " + shellSingleQuoted(script)
+}
+
+// remoteScriptWithPassword 同 remoteScript,但 sudo 从 stdin 读密码(-S)且不打提示(-p ”)。
+// 菜单那条路没有终端,而非 root 登录的 sudo 多半要密码 —— 用户在窗口里填的就是它。
+// 同样**整段**包进去,理由同上。
+func remoteScriptWithPassword(script string) string {
+	return "sudo -S -p '' sh -c " + shellSingleQuoted(script)
 }
 
 // sshArgsFor 是连这台机器要带的 ssh 参数。

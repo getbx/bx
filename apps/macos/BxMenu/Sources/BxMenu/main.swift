@@ -1131,40 +1131,135 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 部署表单。
     private lazy var deployWindow: DeployWindowController = {
         let controller = DeployWindowController()
-        controller.onRun = { [weak self] target in
-            self?.handOffDeployToTerminal(target)
+        controller.onRun = { [weak self] target, password, options in
+            self?.startDeploy(target, password: password, options: options)
+        }
+        controller.onCancel = { [weak self] in
+            self?.cancelDeploy?()
+        }
+        controller.onOpenServers = { [weak self] in
+            self?.openServersWindow()
+        }
+        controller.onSetUp = { [weak self] link, udp in
+            self?.setUpBxWithDeployedServer(link: link, udp: udp)
         }
         return controller
     }()
+
+    /// 取消正在跑的那一次部署。
+    private var cancelDeploy: (() -> Void)?
 
     @objc private func openDeployWindow() {
         deployWindow.show()
     }
 
-    /// 把部署命令交给 Terminal 去跑。
+    /// 用户在部署窗口里点了「Set Up Server」。
     ///
-    /// **不在 app 里执行,是因为 bx 一行 SSH 凭据都不经手。** 菜单是 LSUIElement
-    /// 应用,没有 TTY —— ssh 要问密码时无处可问;真在 app 里收密码,就等于把
-    /// 「凭据全归系统 ssh」这条设计推翻。写一个临时脚本再 open 它,是**不需要
-    /// 自动化权限**的那条路(AppleScript `do script` 会弹「BxMenu 想要控制
-    /// 终端」),而且脚本内容与表单上显示的完全一致,用户可以自己打开看。
-    private func handOffDeployToTerminal(_ target: DeployTarget) {
-        let script = deployScriptText(target)
-        let path = (NSTemporaryDirectory() as NSString).appendingPathComponent("bx-deploy.command")
-        do {
-            try script.write(toFile: path, atomically: true, encoding: .utf8)
-            // 只有自己能读能执行:这个文件里有目标主机与登录名。
-            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
-        } catch {
-            let alert = NSAlert()
-            alert.messageText = L("Could not start the installer")
-            alert.informativeText = "\(error.localizedDescription)\n\n"
-                + L("You can run this yourself in Terminal:") + "\n" + deployCommandLine(target)
-            NSApp.activate(ignoringOtherApps: true)
-            alert.runModal()
+    /// 密码只在这一次调用里经过:交给 runDeployProcess 写进子进程的 stdin,**不进 argv、
+    /// 不进环境变量、不落盘**(DeployModel 顶部;Go 那边 internal/sshpass)。
+    private func startDeploy(_ target: DeployTarget, password: String, options: DeployOptions) {
+        guard ensureCLIUsable() else {
+            deployWindow.processEnded(status: 127, stderrTail: L("bx is not installed at {0}.", bxPath))
             return
         }
-        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+        cancelDeploy = runDeployProcess(
+            arguments: deployArguments(target, options),
+            password: options.hasPassword ? password : nil,
+            onLine: { [weak self] line in
+                if let event = parseDeployEvent(line) {
+                    self?.deployWindow.handle(event)
+                }
+            },
+            onExit: { [weak self] status, stderrTail in
+                self?.cancelDeploy = nil
+                self?.deployWindow.processEnded(status: status, stderrTail: stderrTail)
+            }
+        )
+    }
+
+    /// 部署窗口的子进程:`bx server deploy --json …`。**这是菜单里第四个起进程的地方**,
+    /// 在 TestMacMenuSpawnsOnlyFromTheActionPath 里登记过:只由用户在部署窗口里点按钮触发,
+    /// 不在轮询路径上。
+    ///
+    /// 与 runBx 的区别是它**流式**读输出(进度一行一行到)、并且要往 stdin 写一次密码。
+    /// 回调都回到主线程。
+    private func runDeployProcess(
+        arguments: [String],
+        password: String?,
+        onLine: @escaping (String) -> Void,
+        onExit: @escaping (Int32, String) -> Void
+    ) -> (() -> Void)? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: bxPath)
+        process.arguments = arguments
+        let input = Pipe()
+        let output = Pipe()
+        let errors = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = errors
+
+        // 读输出的回调与退出回调跑在不同线程上:两块缓冲一律只在这一条串行队列里碰。
+        let io = DispatchQueue(label: "bx.deploy.io")
+        var buffer = Data()
+        var errTail = Data()
+        func drainLines() {
+            while let newline = buffer.firstIndex(of: 0x0A) {
+                let line = String(decoding: buffer[buffer.startIndex..<newline], as: UTF8.self)
+                buffer.removeSubrange(buffer.startIndex...newline)
+                DispatchQueue.main.async { onLine(line) }
+            }
+        }
+        output.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { return }
+            io.sync {
+                buffer.append(chunk)
+                drainLines()
+            }
+        }
+        errors.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            io.sync {
+                errTail.append(chunk)
+                if errTail.count > 8192 { errTail = errTail.suffix(8192) }
+            }
+        }
+        process.terminationHandler = { finished in
+            output.fileHandleForReading.readabilityHandler = nil
+            errors.fileHandleForReading.readabilityHandler = nil
+            let rest = output.fileHandleForReading.readDataToEndOfFile()
+            let tail: String = io.sync {
+                buffer.append(rest)
+                drainLines()
+                if !buffer.isEmpty {
+                    let last = String(decoding: buffer, as: UTF8.self)
+                    buffer.removeAll()
+                    DispatchQueue.main.async { onLine(last) }
+                }
+                return String(decoding: errTail, as: UTF8.self)
+            }
+            DispatchQueue.main.async {
+                onExit(finished.terminationStatus, tail.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+        }
+        do {
+            try process.run()
+        } catch {
+            onExit(127, error.localizedDescription)
+            return nil
+        }
+        // 密码只写这一次,然后关掉 stdin。
+        if let password {
+            input.fileHandleForWriting.write(Data((password + "\n").utf8))
+        }
+        try? input.fileHandleForWriting.close()
+        return { process.terminate() }
+    }
+
+    /// 部署完成,但这台 Mac 上 bx 还没配过:用刚装好的那台直接走首次设置(不再让用户粘贴链接)。
+    private func setUpBxWithDeployedServer(link: String, udp: String?) {
+        beginSetup(prefilled: SetupLinks(main: link, udp: udp))
     }
 
     /// 服务器窗口。窗口而不是子菜单,理由同 rulesWindow。
@@ -2790,7 +2885,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refresh(userInitiated: true)
     }
 
-    private func beginSetup() {
+    private func beginSetup(prefilled: SetupLinks? = nil) {
         // 这是「CLI 在不在、跑不跑得起来」真正有意义的地方:下面那条 AppleScript
         // 会去执行它,而执行之前先弹一个授权框。轮询路径不再替这里探路(那是每几秒
         // 一次 spawn),所以在**要用它的那一刻**问一次 —— 让用户输完密码才被告知
@@ -2798,7 +2893,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 一次真去执行 CLI 的探测,它接手了 `bx logs --help` 被删之后留下的那一档:
         // 文件在、却跑不起来。
         guard ensureCLIUsable() else { return }
-        guard let (links, _) = promptForClientLink() else { return }
+        guard let links = prefilled ?? promptForClientLink()?.0 else { return }
         let command = "'\(bxPath)' setup \(setupArguments(links, quote: shellSingleQuoted))"
         guard runPrivileged(command) else {
             showFailure(L("Setup failed"), L("bx was not configured."))

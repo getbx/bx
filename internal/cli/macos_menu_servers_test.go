@@ -171,60 +171,69 @@ func TestMacMenuExitIPProbeUsesTheVettedEndpointAndValidatesTheAnswer(t *testing
 	}
 }
 
-// **部署表单不许经手 SSH 凭据。**
+// **部署窗口里的密码只有一条路:子进程的 stdin。**
 //
-// 这是 `bx server deploy` 从第一天起的设计(密码/密钥/agent/known_hosts 全归系统
-// ssh),GUI 不该把它推翻。菜单是 LSUIElement 应用、没有 TTY —— 真在 app 里收
-// 密码,就等于既推翻了那条设计,又要自己保管一个我们没有能力保管的东西。
+// 2026-09-30 所有者推翻了原先「bx 不经手 SSH 凭据、交给 Terminal」的设计:窗口是给小白用的,
+// 让他面对终端盲打密码等于没做,而「在终端里输入」在他们的理解里也不代表 bx 不知道密码。
+// 新的承诺是「只在内存里用一次、用完不存」。这条守卫钉的就是这个承诺在菜单这一侧的形状:
+//   - 密码只写进子进程的 stdin(不进 argv —— 本机任何进程都看得见;不进环境变量);
+//   - 部署那几个文件里不许出现任何能把它留下来的东西(写文件、UserDefaults、钥匙串);
+//   - 输入框是 NSSecureTextField,并且**在交出去之前**清空。
 //
-// 守卫钉的是**语义**:交给 Terminal 的那段脚本必须由 deployScriptText 生成,
-// 而这个函数体里不许出现任何收密码的迹象。
-func TestMacMenuDeployNeverHandlesSSHCredentials(t *testing.T) {
-	body, ok := swiftFunctionBody(menuMainSwiftSource(t),
-		"private func handOffDeployToTerminal(_ target: DeployTarget)")
+// Go 那一侧(只进内存、只交给 ssh)由 internal/sshpass 与 serverdeploy_menu_test.go 钉住。
+func TestMacMenuDeployPasswordOnlyTravelsThroughStdin(t *testing.T) {
+	main := menuMainSwiftSource(t)
+	runner, ok := swiftFunctionBody(main, "private func runDeployProcess(")
 	if !ok {
-		t.Fatal("读不出 handOffDeployToTerminal 的函数体 —— 守卫已经失效,先修守卫")
+		t.Fatal("读不出 runDeployProcess 的函数体 —— 守卫已经失效,先修守卫")
 	}
-	if !strings.Contains(body, "deployScriptText(target)") {
-		t.Error("交给 Terminal 的不是 deployScriptText 生成的脚本 —— " +
-			"手拼一条命令会绕过那个纯函数里的引号转义")
+	if !strings.Contains(runner, "input.fileHandleForWriting.write(") {
+		t.Error("密码没有写进子进程的 stdin")
 	}
-	for _, smell := range []string{
-		"password", "Password", "passphrase", "sshpass",
-		"SSH_ASKPASS", "secureTextField", "NSSecureTextField",
-	} {
-		if strings.Contains(body, smell) {
-			t.Errorf("部署路径里出现了 %q —— bx 不经手 SSH 凭据", smell)
+	if !strings.Contains(runner, "process.arguments = arguments") {
+		t.Error("参数不是原样来自 deployArguments(那个纯函数保证密码不在参数里)")
+	}
+	for _, leak := range []string{"environment", "write(toFile", "UserDefaults", "SecItem", "password)"} {
+		if strings.Contains(runner, leak) {
+			t.Errorf("runDeployProcess 里出现了 %q —— 密码只许走 stdin", leak)
 		}
 	}
-	// 整个菜单 app 里都不许有密码输入框:这条比上面那条宽,挡的是「换个函数
-	// 再收一次」。
-	if strings.Contains(menuMainSwiftSource(t), "NSSecureTextField") {
-		t.Error("菜单里出现了密码输入框")
-	}
-}
-
-// 临时脚本里有目标主机与登录名,权限必须是 0700。
-//
-// 它落在 /tmp,那是**所有用户都能读**的目录 —— 默认权限会把「这台 Mac 的主人
-// 在管理哪几台机器、用什么登录名」交给本机任何一个进程。
-func TestMacMenuDeployScriptIsNotWorldReadable(t *testing.T) {
-	body, ok := swiftFunctionBody(menuMainSwiftSource(t),
-		"private func handOffDeployToTerminal(_ target: DeployTarget)")
+	start, ok := swiftFunctionBody(main, "private func startDeploy(")
 	if !ok {
-		t.Fatal("读不出 handOffDeployToTerminal 的函数体 —— 守卫已经失效,先修守卫")
+		t.Fatal("读不出 startDeploy 的函数体 —— 守卫已经失效,先修守卫")
 	}
-	if !strings.Contains(body, "0o700") {
-		t.Error("临时脚本没有收紧到 0700 —— 它落在 /tmp,里面有目标主机与登录名")
+	if !strings.Contains(start, "arguments: deployArguments(target, options)") {
+		t.Error("部署参数不是由 deployArguments 生成的")
 	}
-	write := strings.Index(body, "write(toFile:")
-	open := strings.Index(body, "NSWorkspace.shared.open(")
-	perm := strings.Index(body, "posixPermissions")
-	if write < 0 || open < 0 || perm < 0 {
-		t.Fatal("读不出写盘 / 收权限 / 打开这三步 —— 守卫已经失效,先修守卫")
+	root := filepath.Join("..", "..", "apps", "macos", "BxMenu", "Sources", "BxMenu")
+	for _, file := range []string{"DeployWindow.swift", "DeployModel.swift"} {
+		raw, err := os.ReadFile(filepath.Join(root, file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		code := swiftCodeOnly(string(raw))
+		for _, leak := range []string{"write(toFile", "UserDefaults", "SecItem", "NSPasteboard"} {
+			if strings.Contains(code, leak) {
+				t.Errorf("%s 里出现了 %q —— 密码用完不存", file, leak)
+			}
+		}
 	}
-	if !(write < perm && perm < open) {
-		t.Errorf("顺序不对(写=%d 收权限=%d 打开=%d)—— 必须先收紧再交出去", write, perm, open)
+	raw, err := os.ReadFile(filepath.Join(root, "DeployWindow.swift"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := swiftCodeOnly(string(raw))
+	if !strings.Contains(window, "NSSecureTextField()") {
+		t.Error("密码框不是 NSSecureTextField —— 屏幕共享、录屏里会是明文")
+	}
+	body, ok := swiftFunctionBody(window, "private func start(options: DeployOptions)")
+	if !ok {
+		t.Fatal("读不出 start(options:) 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	clear := strings.Index(body, `passwordField?.stringValue = ""`)
+	hand := strings.Index(body, "onRun?(")
+	if clear < 0 || hand < 0 || clear > hand {
+		t.Errorf("密码框没有在交出去之前清空(清空=%d 交出=%d)", clear, hand)
 	}
 }
 

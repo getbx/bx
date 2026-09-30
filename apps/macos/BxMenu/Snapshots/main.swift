@@ -110,7 +110,7 @@ func writeTree(_ window: NSWindow, to path: String) {
 /// 按标题找窗口。**每扇窗口各自 ensureWindow,所以不能只取 NSApp.windows.first** ——
 /// 那会在第二扇之后取到错的那一个,而两张图看起来都"像模像样"。
 func windowTitled(_ title: String) -> NSWindow {
-    guard let w = NSApp.windows.first(where: { $0.title == title && $0.contentView != nil }) else {
+    guard let w = NSApp.windows.first(where: { $0.title == title && $0.contentView != nil && $0.isVisible }) else {
         fail("没拿到标题为 \(title) 的窗口")
     }
     return w
@@ -206,11 +206,31 @@ do {
     capture(windowTitled(L("Traffic by App")), as: "apptraffic")
 }
 
-// —— Set Up a New Server(无数据,纯表单)——
+// —— Set Up a New Server:空表单、进行中、装好但本机连不上(安全组)、已经装过 ——
 do {
     let controller = DeployWindowController()
     controller.show()
     capture(windowTitled(L("Set Up a New Server")), as: "deploy")
+    for id in ["connect", "download", "install"] {
+        controller.handle(DeployEvent(event: "step", step: id))
+    }
+    capture(windowTitled(L("Set Up a New Server")), as: "deploy-running")
+    for id in ["firewall", "start", "add", "test"] {
+        controller.handle(DeployEvent(event: "step", step: id))
+    }
+    controller.handle(DeployEvent(event: "done", name: "tokyo", host: "203.0.113.9", added: true,
+                                  probe: DeployProbe(measured: true, reachable: false)))
+    capture(windowTitled(L("Set Up a New Server")), as: "deploy-done-unreachable")
+    windowTitled(L("Set Up a New Server")).close()
+
+    let again = DeployWindowController()
+    again.show()
+    for id in ["connect", "download", "install"] {
+        again.handle(DeployEvent(event: "step", step: id))
+    }
+    again.handle(DeployEvent(event: "error", code: "already_installed",
+                             detail: "/var/lib/bx/sbserver.json already exists (pass --force to overwrite it)"))
+    capture(windowTitled(L("Set Up a New Server")), as: "deploy-already-installed")
 }
 
 print("macOS menu snapshots written")

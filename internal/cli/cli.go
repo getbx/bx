@@ -424,7 +424,7 @@ func serverCommands() []*cli.Command {
 		},
 		{Name: "use", Usage: "switch to another server in the list (hot-switch first; only a failed switch needs a restart)", ArgsUsage: "<name>", Flags: ruleBaseFlags(), Action: serverUseAction},
 		{Name: "rm", Usage: "remove a server from the list (not the one in use)", ArgsUsage: "<name>", Flags: ruleBaseFlags(), Action: serverRemoveAction},
-		{Name: "deploy", Usage: "install a bx server onto a VPS from this machine (over your system ssh; bx never handles your credentials)", ArgsUsage: "<user@host>", Flags: serverDeployFlags(), Action: serverDeployAction},
+		{Name: "deploy", Usage: "install a bx server onto a VPS from this machine (over ssh; a password given with --password-stdin is used once and never stored)", ArgsUsage: "<user@host>", Flags: serverDeployFlags(), Action: serverDeployAction},
 		{Name: "install", Usage: "install the bx server service", Flags: serverInstallFlags(), Action: serverInstallAction},
 		{Name: "link", Usage: "generate a client bx:// link", Flags: serverLinkFlags(), Action: serverLinkAction},
 		{Name: "share", Usage: "share with one person", ArgsUsage: "<name>", Flags: serverShareFlags(), Action: serverShareAction},

@@ -422,8 +422,8 @@ kill-switch 影响),网关上的门户页在 bx 开着时通常够得着 —— 
 ## bx server deploy(2026-08-14,真机端到端已验)
 
 **一条命令把 bx server 装到一台裸 VPS**,跑在管理员自己的机器上(与 `bx server install`
-的全部区别:后者要求你已经在那台机器上)。走系统 `ssh`/`scp` —— **bx 完全不经手
-凭据**,密码/密钥/agent/known_hosts 全由用户自己的 ssh 客户端处理。
+的全部区别:后者要求你已经在那台机器上)。走系统 `ssh`/`scp`;**2026-09-30 起菜单窗口里
+收密码**(只进内存、用完即丢,判据见 `apps/macos/BxMenu/CLAUDE.md`「部署窗口」)。
 
 **真机验收(203.0.113.173,全新 Ubuntu 24.04)**:一条命令 → 远端自取并校验
 二进制 → 装 reality+hysteria2 → 放行 ufw → 起服务(active+enabled)→ 443 TCP/UDP

@@ -1486,7 +1486,10 @@ func TestMacMenuSpawnsOnlyFromTheActionPath(t *testing.T) {
 			// **加进这份清单是刻意的,不是绕过**:替代方案要么让菜单自己解析
 			// NET_RT_DUMP(一大段 C interop,判据反而更难看见),要么把网关经
 			// Guardian 的 wire 格式发上来(要动协议 + 能力声明,只为一个按钮)。
-			callers: []string{"runBx", "runPrivilegedScriptOffMainThread", "readDefaultRouteOffMainThread"},
+			// runDeployProcess 跑的是 `bx server deploy --json`(2026-09-30,部署窗口):
+			// 只由用户在「Set Up a New Server」窗口里点按钮触发,不在轮询路径上。它不走 runBx,
+			// 是因为要**流式**读进度、并往 stdin 写一次密码(runBx 等进程结束才返回、stdin 不接)。
+			callers: []string{"runBx", "runPrivilegedScriptOffMainThread", "readDefaultRouteOffMainThread", "runDeployProcess"},
 			why:     "进程创建的出口必须是可枚举的一小撮。多一个没人盯着的,上面整条链的证明就绕过去了",
 		},
 		{
@@ -1521,7 +1524,8 @@ func TestMacMenuSpawnsOnlyFromTheActionPath(t *testing.T) {
 			// setup + down + up)。**它必须显式登记在这里** —— 这条守卫的价值就在于
 			// 每新增一条通向 spawn 的路都要有人当场承认。
 			pattern: call("ensureCLIUsable("), label: "ensureCLIUsable(",
-			callers: []string{"beginSetup", "updateBx", "checkForLeaks", "replaceConfiguration"},
+			// startDeploy(2026-09-30)是部署窗口的「Set Up Server」按钮,点一下才走到这里。
+			callers: []string{"beginSetup", "updateBx", "checkForLeaks", "replaceConfiguration", "startDeploy"},
 			why:     "闸门只许出现在真要 shell out 到 CLI 的动作里;出现在别处就意味着有别的路径通向 spawn",
 		},
 		{
@@ -1543,7 +1547,9 @@ func TestMacMenuSpawnsOnlyFromTheActionPath(t *testing.T) {
 			//
 			// 这不是放宽:beginSetup 在**任何** spawn 之前先弹确认框并要用户粘贴链接,
 			// 而且它只出现在启动那一次与用户点击那一次,不在轮询路径上。
-			pattern: call("beginSetup("), label: "beginSetup(", callers: []string{"setUpBx", "runFirstRunGuidance"},
+			// setUpBxWithDeployedServer(2026-09-30):部署窗口装好一台、而这台 Mac 还没配过 bx 时,
+			// 用户点「用这台服务器配置 bx」才走到这里 —— 同样是一次点击,同样先弹授权框。
+			pattern: call("beginSetup("), label: "beginSetup(", callers: []string{"setUpBx", "runFirstRunGuidance", "setUpBxWithDeployedServer"},
 			why: "首次引导与菜单点击共用一条路;别的地方调它就意味着有第三条通向提权命令的路径",
 		},
 		{

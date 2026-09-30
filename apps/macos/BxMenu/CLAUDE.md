@@ -59,7 +59,7 @@ Language ▸ 子菜单:跟随系统 / English / 简体中文,**立刻生效、�
   原词或写明理由的白名单)。四条变异各咬中一条。
 - **仍是英文的**(服务端发的话,菜单不改写):Checks 页每一项的 detail、规则体检的 `summary`、
   日志正文、Guardian 的错误描述。
-- 切语言时开着的窗口原地重画(各窗口 `relocalize()`);部署表单整扇重建但保住已填的三格。
+- 切语言时开着的窗口原地重画(各窗口 `relocalize()`);部署窗口整扇重建但保住已填的格子(**密码除外**),部署进行中不重建。
 
 ## 菜单本身(9 行 2 条分隔线,2026-09-08,真机未验)
 
@@ -308,3 +308,25 @@ WindowServer 时明说 SKIPPED 退 0(「跑不了」≠「跑了没过」)。
 NSSwitch 观感、拨动后菜单是否留着并显示进度、失败是否弹回;子菜单展开时 2 秒一拍是否
 真的不再拆它;规则窗口 `Add Rule…` 三种结局、`Remove`+`Undo`、表顶那句话的换行;
 Servers 窗口整套;Show Details / Logs 页渲染。
+
+## 部署窗口(「Set Up a New Server」,2026-09-30,真机未验)
+
+**所有者推翻了「bx 不经手 SSH 凭据、交给 Terminal」**:窗口是给小白用的,让他面对终端盲打密码
+等于没做;而「在终端里输入」在他们的理解里也不代表 bx 不知道密码。新承诺是**只在内存里用一次、
+用完不存**,在菜单这一侧的形状由 `TestMacMenuDeployPasswordOnlyTravelsThroughStdin` 钉住:
+- 密码只写进 `bx server deploy --json --password-stdin` 的 **stdin**(不进 argv、不进环境变量);
+  窗口是 `NSSecureTextField`,**交出去之前清空**;部署两个文件里不许有写文件 / UserDefaults / 钥匙串。
+- Go 那边(`internal/sshpass`):ssh 以 bx 自己为 SSH_ASKPASS,经 0700 目录里的 socket + 一次性 nonce
+  取密码,**只答密码提示、每个 ssh 进程至多一次**(错了不重试,免得喂 fail2ban);连接复用让整次
+  部署只登录一次;非 root 登录的 `sudo -S` 用同一个密码。`main()` 里那个分流由
+  `TestTheBinaryAnswersSSHAskpassFromMain` 真编一个二进制去钉。
+- **bx 自己的 known_hosts**(`~/Library/Application Support/bx/known_hosts`),新服务器 accept-new、
+  **变了的指纹照样拒绝**;窗口给「我重装过它」按钮(`--forget-host-key`)。**路径带空格,传给 ssh
+  必须加双引号** —— 不加时指纹被写进 `~/Library/Application` 这个野文件(端到端撞到过)。
+- 进度逐行 JSON(step / done / error),失败按类出话(`classifyDeployFailure` ↔ `deployFailure`);
+  「已装过」给「重装」、指纹变了给「我重装过它」,其余只说该改什么。
+- **装好只加进清单、不切换**(`deployLister` 里按构造没有切换);同一个地址已在清单里就换它的
+  链接而不是加重复项;装好后从这台 Mac 测一次,连不上时点名服务商的安全组。
+- 这台 Mac 还没配过 bx:结果给「用这台服务器配置 bx」,链接直接交给 `beginSetup(prefilled:)`。
+- 第四个起进程的地方 `runDeployProcess`,已在 `TestMacMenuSpawnsOnlyFromTheActionPath` 登记。
+
