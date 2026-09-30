@@ -20,6 +20,7 @@ var allowedInternalDeps = map[string]struct{}{
 	"github.com/getbx/bx/internal/routerbuild":  {},
 	"github.com/getbx/bx/internal/blink":        {},
 	"github.com/getbx/bx/internal/mobileconfig": {},
+	"github.com/getbx/bx/internal/policysync":   {},
 	"github.com/getbx/bx/internal/singboxout":   {},
 	"github.com/getbx/bx/internal/singboxrules": {},
 }

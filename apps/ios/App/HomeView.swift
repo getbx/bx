@@ -31,6 +31,12 @@ struct HomeView: View {
                     } footer: {
                         Text("While protection is on, nothing leaves this iPhone outside the tunnel — even while it reconnects.")
                     }
+                    Section {
+                        LabeledContent("Rules", value: rulesTitle)
+                            .accessibilityIdentifier("home.rules")
+                    } footer: {
+                        if let note = rulesNote { Text(note) }
+                    }
                     Section("Server") {
                         LabeledContent("Address", value: tunnel.serverHost ?? "")
                             .accessibilityIdentifier("home.server")
@@ -57,6 +63,31 @@ struct HomeView: View {
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showingAdd = false } } }
                 }
             }
+        }
+    }
+
+    private var rulesTitle: String {
+        switch tunnel.rules {
+        case .synced: return "From your Mac"
+        case .defaults: return "bx defaults"
+        }
+    }
+
+    private var rulesNote: String? {
+        switch tunnel.rules {
+        case let .synced(_, updatedAt):
+            let when = ISO8601DateFormatter().date(from: updatedAt).map {
+                RelativeDateTimeFormatter().localizedString(for: $0, relativeTo: Date())
+            } ?? ""
+            return when.isEmpty ? "Synced through your server." : "Synced through your server, updated \(when)."
+        case .defaults(.notCheckedYet):
+            return "China direct, everything else through the tunnel. Your Mac's rules are fetched once protection is on."
+        case .defaults(.notSyncedYet):
+            return "China direct, everything else through the tunnel. Your Mac has not synced its rules yet."
+        case .defaults(.serverCannotSync):
+            return "China direct, everything else through the tunnel. Your server cannot sync rules yet — on the server run: sudo bx server enable-sync"
+        case .defaults(.differentLink):
+            return "China direct, everything else through the tunnel. The rules on your server were synced with a different link, so they were ignored."
         }
     }
 

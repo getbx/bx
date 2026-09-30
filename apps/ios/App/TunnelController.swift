@@ -15,9 +15,29 @@ final class TunnelController: ObservableObject {
         case failed(String)
     }
 
+    /// Where the phone's routing rules come from (rule sync, step 4). The home screen says it
+    /// plainly — never implying the Mac's rules are here when they are not.
+    enum RulesSource: Equatable {
+        case defaults(DefaultsReason)
+        case synced(version: Int64, updatedAt: String)
+    }
+
+    enum DefaultsReason: Equatable {
+        case notCheckedYet      // protection has not been on since the server was added
+        case notSyncedYet       // the store answered, but the Mac has not pushed yet
+        case serverCannotSync   // the store is not reachable through the tunnel
+        case differentLink      // a blob is there, sealed with another link
+    }
+
     @Published private(set) var state: State = .noServer
     @Published private(set) var serverHost: String?
+    @Published private(set) var rules: RulesSource = .defaults(.notCheckedYet)
     @Published var lastError: String?
+
+    /// The policy the phone runs and Explain asks: synced if we have it, otherwise the defaults.
+    var policyJSON: String { syncedPolicy ?? BxkitDefaultPolicy() }
+    private var syncedPolicy: String?
+    private var syncTimer: Timer?
 
     private var manager: NETunnelProviderManager?
     private var observer: NSObjectProtocol?
@@ -32,6 +52,10 @@ final class TunnelController: ObservableObject {
         self.fixture = fixture
         defaults = fixture ? nil : UserDefaults(suiteName: SharedPaths.appGroup)
         serverHost = defaults?.string(forKey: "serverHost")
+        if !fixture, let saved = SharedPaths.readSyncedPolicy(), let v = Self.version(of: saved) {
+            syncedPolicy = saved
+            rules = .synced(version: v.version, updatedAt: v.updatedAt)
+        }
         if fixture {
             state = serverHost == nil ? .noServer : .off
             return
@@ -47,8 +71,15 @@ final class TunnelController: ObservableObject {
     /// Paste → configure → store. Refuses links the phone cannot run, saying which kinds work.
     func importLink(_ raw: String) throws {
         let link = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A new server means a new link, and rules synced for the old link do not apply to it.
+        let sameLink = !fixture && LinkStore.load() == link
+        if !sameLink {
+            syncedPolicy = nil
+            rules = .defaults(.notCheckedYet)
+            if !fixture { SharedPaths.removeSyncedPolicy() }
+        }
         var error: NSError?
-        let json = BxkitConfigure(link, BundledLists.chinaDomain, BundledLists.chinaCIDR, &error)
+        let json = BxkitConfigureWithPolicy(link, policyJSON, BundledLists.chinaDomain, BundledLists.chinaCIDR, &error)
         if let error {
             if error.localizedDescription.contains("no in-process sing-box outbound") {
                 throw DriverError("This server type is not supported on iPhone yet. bx on iPhone runs reality servers (vless:// links, or a bx:// link that contains one).")
@@ -95,7 +126,10 @@ final class TunnelController: ObservableObject {
             LinkStore.delete()
             try? await manager?.removeFromPreferences()
             SharedPaths.removeStartConfig()
+            SharedPaths.removeSyncedPolicy()
         }
+        syncedPolicy = nil
+        rules = .defaults(.notCheckedYet)
         defaults?.removeObject(forKey: "serverHost")
         serverHost = nil
         state = .noServer
@@ -108,12 +142,85 @@ final class TunnelController: ObservableObject {
 
     private func syncStatus() {
         guard serverHost != nil else { state = .noServer; return }
+        let wasOn = state == .on
         switch manager?.connection.status {
         case .connected: state = .on
         case .connecting, .reasserting: state = .connecting
         case .disconnecting, .disconnected, .invalid, .none: state = .off
         @unknown default: state = .off
         }
+        // Pull when protection comes on, then every 30 minutes while it stays on. Only through the
+        // tunnel: the sync name resolves nowhere without it.
+        if state == .on, !wasOn {
+            Task { await pullRules() }
+            syncTimer?.invalidate()
+            syncTimer = Timer.scheduledTimer(withTimeInterval: 30 * 60, repeats: true) { [weak self] _ in
+                Task { @MainActor in await self?.pullRules() }
+            }
+        } else if state != .on {
+            syncTimer?.invalidate()
+            syncTimer = nil
+        }
+    }
+
+    /// Fetch the Mac's rules from the user's own server, and if they are newer than what the
+    /// phone runs, regenerate the config and reload the tunnel in place.
+    func pullRules() async {
+        guard !fixture, state == .on, let link = LinkStore.load() else { return }
+        var error: NSError?
+        let address = BxkitSyncURL(link, &error)
+        guard error == nil, let url = URL(string: address) else { return }
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 15
+        do {
+            let (data, response) = try await URLSession(configuration: config).data(from: url)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if status == 404 {
+                if syncedPolicy == nil { rules = .defaults(.notSyncedYet) }
+                return
+            }
+            guard status == 200 else { if syncedPolicy == nil { rules = .defaults(.serverCannotSync) }; return }
+            var openError: NSError?
+            let policy = BxkitOpenSynced(link, data, &openError)
+            if openError != nil {
+                if syncedPolicy == nil { rules = .defaults(.differentLink) }
+                return
+            }
+            guard let v = Self.version(of: policy) else { return }
+            if case let .synced(current, _) = rules, v.version <= current { return }
+            try apply(policy: policy, link: link)
+            rules = .synced(version: v.version, updatedAt: v.updatedAt)
+        } catch {
+            // Transient failures keep whatever the phone already runs; only say so if it never synced.
+            if syncedPolicy == nil { rules = .defaults(.serverCannotSync) }
+        }
+    }
+
+    private func apply(policy: String, link: String) throws {
+        var error: NSError?
+        let json = BxkitConfigureWithPolicy(link, policy, BundledLists.chinaDomain, BundledLists.chinaCIDR, &error)
+        if let error { throw error }
+        struct Configured: Decodable { let config: String; let rule_sets: [String: String] }
+        let c = try JSONDecoder().decode(Configured.self, from: Data(json.utf8))
+        try SharedPaths.writeStartConfig(c.config, ruleSets: c.rule_sets)
+        try SharedPaths.writeSyncedPolicy(policy)
+        syncedPolicy = policy
+        if let session = manager?.connection as? NETunnelProviderSession {
+            try? session.sendProviderMessage(Data("reload".utf8)) { _ in }
+        }
+    }
+
+    static func version(of policy: String) -> (version: Int64, updatedAt: String)? {
+        struct V: Decodable { let version: Int64; let updated_at: String? }
+        guard let v = try? JSONDecoder().decode(V.self, from: Data(policy.utf8)), v.version > 0 else { return nil }
+        return (v.version, v.updated_at ?? "")
+    }
+
+    /// Fixture only: pretend the Mac's rules arrived (UI tests and snapshots).
+    func fixtureSynced(policy: String) {
+        guard fixture, let v = Self.version(of: policy) else { return }
+        syncedPolicy = policy
+        rules = .synced(version: v.version, updatedAt: v.updatedAt)
     }
 
     private func loadManager() async throws -> NETunnelProviderManager {

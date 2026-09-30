@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/getbx/bx/internal/config"
+	"github.com/getbx/bx/internal/policysync"
 	"github.com/getbx/bx/internal/singboxrules"
 )
 
@@ -75,7 +76,14 @@ func TestRouteIsTheTranslatedRulesBehindThreeFixedPreambleRules(t *testing.T) {
 	}
 	_, doc := build(t, baseYAML)
 	rules := at(doc, "route", "rules").([]any)
-	pre := []map[string]any{{"action": "sniff"}, {"protocol": "dns", "action": "hijack-dns"}, {"ip_version": float64(6), "action": "reject"}}
+	pre := []map[string]any{
+		{"action": "sniff"},
+		{"protocol": "dns", "action": "hijack-dns"},
+		{"ip_version": float64(6), "action": "reject"},
+		// Rule sync: the reserved name goes into the tunnel and lands on the VPS's loopback store.
+		// Before the user's rules, so no direct rule can send it out of the tunnel.
+		{"domain": []any{SyncHost}, "action": "route", "outbound": "proxy", "override_address": "127.0.0.1", "override_port": float64(policysync.StorePort)},
+	}
 	for i, p := range pre {
 		if !reflect.DeepEqual(rules[i].(map[string]any), p) {
 			t.Fatalf("route rule %d = %v, want %v", i, rules[i], p)

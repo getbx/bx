@@ -34,6 +34,25 @@ enum SharedPaths {
         try FileManager.default.setAttributes(protection, ofItemAtPath: url.path)
     }
 
+    static let syncedPolicyName = "synced-policy.json"
+
+    /// The Mac's rules as last synced (routing intent only; no link). Same protection as the config.
+    static func writeSyncedPolicy(_ policy: String) throws {
+        let url = try make().base.appendingPathComponent(syncedPolicyName)
+        try Data(policy.utf8).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path)
+    }
+
+    static func readSyncedPolicy() -> String? {
+        guard let base = container else { return nil }
+        return try? String(contentsOf: base.appendingPathComponent(syncedPolicyName), encoding: .utf8)
+    }
+
+    static func removeSyncedPolicy() {
+        guard let base = container else { return }
+        try? FileManager.default.removeItem(at: base.appendingPathComponent(syncedPolicyName))
+    }
+
     static func removeStartConfig() {
         guard let working = try? make().working else { return }
         try? FileManager.default.removeItem(at: working.appendingPathComponent(startConfigName))

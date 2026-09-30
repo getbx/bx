@@ -14,6 +14,7 @@ import (
 // tunnel,而 tunnel 起子进程);这个包只拼配置,最终要原样编进手机端。
 var allowedInternalDeps = map[string]struct{}{
 	"github.com/getbx/bx/internal/config":       {},
+	"github.com/getbx/bx/internal/policysync":   {},
 	"github.com/getbx/bx/internal/singboxrules": {},
 }
 

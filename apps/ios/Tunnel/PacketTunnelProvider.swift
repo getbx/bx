@@ -60,6 +60,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         commandServer = nil
     }
 
+    // The app rewrote start-config.json (rules synced from the Mac): reload the service in place,
+    // without dropping the tunnel.
+    override func handleAppMessage(_ messageData: Data) async -> Data? {
+        guard String(decoding: messageData, as: UTF8.self) == "reload", let server = commandServer else { return nil }
+        do {
+            let paths = try SharedPaths.make()
+            let raw = try String(contentsOf: paths.working.appendingPathComponent(SharedPaths.startConfigName), encoding: .utf8)
+            try server.startOrReloadService(try SharedPaths.anchor(raw, workingDirectory: paths.working), options: LibboxOverrideOptions())
+            return Data("ok".utf8)
+        } catch {
+            return Data(error.localizedDescription.utf8)
+        }
+    }
+
     override func sleep() async {
         commandServer?.pause()
     }

@@ -38,10 +38,21 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.getbx.bx.ios
         PRODUCT_NAME: bx
         CODE_SIGN_ENTITLEMENTS: App/App.entitlements
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: bx
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: bx
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        # Rule sync reads http://sync.bx.internal/…: a reserved name the phone's own config routes
+        # into the tunnel (onto the VPS's loopback store). Plain HTTP is fine there — it only ever
+        # travels inside the tunnel, and the payload is sealed by policysync anyway.
+        NSAppTransportSecurity:
+          NSExceptionDomains:
+            sync.bx.internal:
+              NSExceptionAllowsInsecureHTTPLoads: true
     dependencies:
       - target: BxTunnel
         embed: true

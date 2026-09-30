@@ -60,13 +60,16 @@ struct MainView: View {
         if fixture, args.contains("--fixture-server") {
             try? controller.importLink(FixtureLinks.reality)
         }
+        if fixture, args.contains("--fixture-synced") {
+            controller.fixtureSynced(policy: #"{"version":1780000000,"updated_at":"2026-09-30T08:00:00Z","global":false,"direct":["*.apple.com"],"proxy":[]}"#)
+        }
         _tunnel = StateObject(wrappedValue: controller)
         _tab = State(initialValue: BxApp.value(after: "--target", in: args) == nil ? 0 : 1)
     }
 
     var body: some View {
         let fixture = args.contains("--fixture")
-        let loaded = Result { try ExplainInputs.load(fixture: fixture) }
+        let loaded = Result { try ExplainInputs.load(fixture: fixture, policy: tunnel.policyJSON) }
         let target = BxApp.value(after: "--target", in: args)
         TabView(selection: $tab) {
             HomeView(tunnel: tunnel)

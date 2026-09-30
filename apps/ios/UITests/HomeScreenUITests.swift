@@ -42,4 +42,22 @@ final class HomeScreenUITests: XCTestCase {
         XCTAssertTrue(problem.label.contains("not supported on iPhone"), "refusal says \(problem.label)")
         XCTAssertFalse(app.descendants(matching: .any)["home.protection"].exists, "the unsupported link was accepted")
     }
+
+    // Rule sync: the Rules row says where the phone's rules come from, and never implies the
+    // Mac's rules are here before they arrived.
+    func testRulesRowSaysDefaultsUntilTheMacsRulesArrive() {
+        let app = launch(["--fixture-server"])
+        let row = app.descendants(matching: .any)["home.rules"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        let text = row.label + " " + ((row.value as? String) ?? "")
+        XCTAssertTrue(text.contains("bx defaults"), "rules row says \(text)")
+    }
+
+    func testRulesRowSaysFromYourMacOnceSynced() {
+        let app = launch(["--fixture-server", "--fixture-synced"])
+        let row = app.descendants(matching: .any)["home.rules"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        let text = row.label + " " + ((row.value as? String) ?? "")
+        XCTAssertTrue(text.contains("From your Mac"), "rules row says \(text)")
+    }
 }

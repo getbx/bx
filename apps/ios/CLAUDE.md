@@ -36,14 +36,20 @@
   这一期只有 reality,别的链接**按类型拒绝并说出来**,不生成一份连不上的配置。
 - **手机跑的是桌面 `bx setup` 的默认路由**(split:china 直连,其余走隧道;china 列表从包里读,
   即仓库内嵌那两份)。Explain 用 `BxkitDefaultPolicy` 问同一份意图 —— 两者不会不一致。
-  **Mac 上用户自己加的规则不在手机上**;要不要同步是待所有者拍板的产品决定(文件导出那条 L1
-  已被否)。
+  Mac 上用户自己加的规则经「规则同步」到手机(见下一条;设计
+  `docs/superpowers/specs/2026-09-29-policy-sync-via-own-server-design.md`)。
 - **链接是凭据,放钥匙串**(`App/LinkStore.swift`,本机、首次解锁后可读);扩展从不读它,只跑 App
   写进共享容器的配置(`Shared/SharedPaths.swift` 的 `writeStartConfig`,按需重连不带启动参数)。
 - **保护开着就开 kill-switch**(`App/TunnelController.swift`);关的时候**先关按需再停**,否则 iOS
   立刻把隧道拉回来。
 - **`--fixture` 不碰任何持久存储**(不写共享设置、不写钥匙串、不调 VPN 框架):一次写了共享设置的
   fixture 运行让下一次启动「已有服务器」,UI 测试当场抓到。
+- **规则同步(拉)**:`sync.bx.internal` 是保留名,手机自己的配置把它送进隧道、改写到 VPS 回环上的
+  存储(`internal/mobileconfig` 的 `SyncHost`,排在用户规则之前,任何直连规则截不走);隧道不在就哪都
+  不通。保护开着时拉(打开时一次、之后每 30 分钟),拉到更新的版本就重生成配置并经
+  `sendProviderMessage("reload")` 原地重载。**换服务器 = 换链接 ⇒ 旧的同步规则作废**。「保护」页的
+  「规则」一行只在真同步到之后才说「From your Mac」;之前说默认,并说出是哪一种原因。明文 HTTP
+  的 ATS 例外只给这个保留名(那条流量只在隧道里走,内容本身也封过)。
 - 真机上走屏幕同一条路径的无头场景:`scripts/ios-dev.sh run app`(导入 → 开 → 探测 → 关 → 忘掉)。
 
 ## 界面的检查

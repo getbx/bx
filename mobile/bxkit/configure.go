@@ -27,6 +27,16 @@ type configured struct {
 // The link is a credential: it goes into the returned config and nowhere else; the caller
 // stores it (Keychain) and the config (app group) itself.
 func Configure(link, chinaDomain, chinaCIDR string) (string, error) {
+	return ConfigureWithPolicy(link, DefaultPolicy(), chinaDomain, chinaCIDR)
+}
+
+// ConfigureWithPolicy is Configure with a routing policy: the one synced from the user's Mac
+// (OpenSynced), or DefaultPolicy. A malformed policy is an error, never silently the defaults.
+func ConfigureWithPolicy(link, policyJSON, chinaDomain, chinaCIDR string) (string, error) {
+	var p policy
+	if err := json.Unmarshal([]byte(policyJSON), &p); err != nil {
+		return "", fmt.Errorf("policy: %w", err)
+	}
 	links, err := candidateLinks(strings.TrimSpace(link))
 	if err != nil {
 		return "", err
@@ -46,7 +56,7 @@ func Configure(link, chinaDomain, chinaCIDR string) (string, error) {
 	if proxy == nil {
 		return "", firstErr
 	}
-	cfg := &config.Config{} // the desktop default: no user rules, not global
+	cfg := &config.Config{Global: p.Global, Rules: []config.Rule{{Direct: p.Direct, Proxy: p.Proxy}}}
 	files, err := mobileconfig.Build(cfg, singboxrules.Lists{
 		ChinaDomain: strings.Split(chinaDomain, "\n"),
 		ChinaCIDR:   strings.Split(chinaCIDR, "\n"),

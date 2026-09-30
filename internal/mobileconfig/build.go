@@ -11,10 +11,16 @@ import (
 	"errors"
 
 	"github.com/getbx/bx/internal/config"
+	"github.com/getbx/bx/internal/policysync"
 	"github.com/getbx/bx/internal/singboxrules"
 )
 
 const tunTag = "tun-in"
+
+// SyncHost is the reserved name the app uses to reach the rule-sync store on the user's VPS.
+// It never resolves to a real address: a route rule sends it into the tunnel with the
+// destination rewritten to the VPS's loopback store, so without the tunnel it goes nowhere.
+const SyncHost = "sync.bx.internal"
 
 // Files 是扩展要的全部文件:配置正文,以及 rule-set 文件(文件名 → 内容,放在 libbox 的
 // 工作目录下,配置里按相对路径引用)。
@@ -52,6 +58,12 @@ func Build(cfg *config.Config, lists singboxrules.Lists, proxy map[string]any) (
 		map[string]any{"action": "sniff"},
 		map[string]any{"protocol": "dns", "action": "hijack-dns"},
 		map[string]any{"ip_version": 6, "action": "reject"},
+		// 规则同步:保留名进隧道、目的地改写成 VPS 回环上的存储。排在用户规则之前,任何直连
+		// 规则都够不着它。
+		map[string]any{
+			"domain": []string{SyncHost}, "action": "route", "outbound": singboxrules.OutboundProxy,
+			"override_address": "127.0.0.1", "override_port": policysync.StorePort,
+		},
 	}
 	for _, r := range b.Route.Rules {
 		rules = append(rules, r)

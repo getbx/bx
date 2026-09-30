@@ -28,7 +28,7 @@ struct ExplainInputs {
 
     // `fixture` is synthetic and committed (apps/ios/App/Fixtures); otherwise the policy the
     // phone actually runs.
-    static func load(fixture: Bool) throws -> ExplainInputs {
+    static func load(fixture: Bool, policy: String = BxkitDefaultPolicy()) throws -> ExplainInputs {
         func read(_ url: URL?) throws -> String {
             guard let url else { throw DriverError("missing explain input") }
             return try String(contentsOf: url, encoding: .utf8)
@@ -40,9 +40,9 @@ struct ExplainInputs {
                 chinaCIDR: read(Bundle.main.url(forResource: "demo-china-cidr", withExtension: "txt"))
             )
         }
-        // The phone runs the desktop's default routing (bxkit.Configure), so Explain asks the
-        // same policy about the same bundled lists — the two cannot disagree.
-        return ExplainInputs(policy: BxkitDefaultPolicy(), chinaDomain: BundledLists.chinaDomain, chinaCIDR: BundledLists.chinaCIDR)
+        // Explain asks the policy the phone actually runs (synced from the Mac, or the defaults)
+        // about the same bundled lists — the two cannot disagree.
+        return ExplainInputs(policy: policy, chinaDomain: BundledLists.chinaDomain, chinaCIDR: BundledLists.chinaCIDR)
     }
 
     func explain(_ target: String) throws -> ExplainAnswer {
