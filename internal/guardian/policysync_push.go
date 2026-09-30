@@ -35,6 +35,22 @@ type policyPusher struct {
 	now        func() time.Time
 
 	lastMod time.Time
+
+	// 推送失败之后的退避(1m, 2m, 4m … 封顶 1h):一台没开 sync-store 的服务器是没用手机的人的
+	// **常态**,此前每分钟重试一次 = 每分钟一条隧道连接 + Guardian 日志一行失败。
+	failures int
+	retryAt  time.Time
+	lastErr  string
+	// wasProtected:上一次看的时候保护开着没有。守护进程没接 poke,「保护刚打开」由这里自己看出来。
+	wasProtected bool
+}
+
+const policySyncMaxBackoff = time.Hour
+
+// poked 是保护刚打开:立刻再查一次(连同退避一起清掉 —— 用户刚开了保护,正是该试的时候)。
+func (p *policyPusher) poked() {
+	p.lastMod = time.Time{}
+	p.retryAt = time.Time{}
 }
 
 type pushState struct {
@@ -66,14 +82,22 @@ func (p *policyPusher) Run(ctx context.Context, poke <-chan struct{}) {
 			return
 		case <-tick.C:
 		case <-poke:
-			p.lastMod = time.Time{} // force a digest check
+			p.poked()
 		}
 	}
 }
 
 func (p *policyPusher) pushIfChanged(ctx context.Context) error {
 	if p.protected == nil || !p.protected() {
+		p.wasProtected = false
 		return nil
+	}
+	if !p.wasProtected {
+		p.wasProtected = true
+		p.poked()
+	}
+	if !p.retryAt.IsZero() && p.now().Before(p.retryAt) {
+		return nil // backing off after a failed push: dial nothing, log nothing
 	}
 	info, err := os.Stat(p.configPath)
 	if err != nil {
@@ -108,13 +132,31 @@ func (p *policyPusher) pushIfChanged(ctx context.Context) error {
 		return err
 	}
 	if err := p.put(ctx, keys.BlobID, blob); err != nil {
-		return err
+		return p.failed(err)
 	}
+	p.failures, p.retryAt, p.lastErr = 0, time.Time{}, ""
 	state.Pushed[keys.BlobID] = digest
 	p.saveState(state)
 	p.lastMod = info.ModTime()
 	log.Printf("guardian_policy_sync_pushed blob=%s… version=%d direct=%d proxy=%d", keys.BlobID[:8], pol.Version, len(pol.Direct), len(pol.Proxy))
 	return nil
+}
+
+// failed schedules the next try and says whether this failure is news: the first one, or a
+// different one from last time. Repeats return nil so Run logs nothing.
+func (p *policyPusher) failed(err error) error {
+	p.failures++
+	backoff := time.Minute << (p.failures - 1)
+	if p.failures > 7 || backoff > policySyncMaxBackoff {
+		backoff = policySyncMaxBackoff
+	}
+	p.retryAt = p.now().Add(backoff)
+	msg := err.Error()
+	if msg == p.lastErr {
+		return nil
+	}
+	p.lastErr = msg
+	return err
 }
 
 func (p *policyPusher) put(ctx context.Context, id string, blob []byte) error {

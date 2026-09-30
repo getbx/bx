@@ -132,8 +132,55 @@ func TestPusherRetriesAfterAFailedPush(t *testing.T) {
 		t.Fatalf("unreachable store: err = %v, want a pointer to bx server enable-sync", err)
 	}
 	env.pusher.dial = real
+	env.pusher.now = func() time.Time { return time.Unix(1_800_000_000+120, 0) } // past the first backoff
 	if err := env.pusher.pushIfChanged(context.Background()); err != nil || env.puts != 1 {
 		t.Fatalf("retry: err=%v puts=%d", err, env.puts)
+	}
+}
+
+// A server without a sync store is the normal case for everyone who never set up the phone. Retrying
+// every minute forever meant a connection through the tunnel and a failure line in the Guardian log
+// every minute (~1,440 lines a day). Back off (1m, 2m, 4m … up to 1h), dial nothing while waiting,
+// log a failure only when it first appears or changes, and try at once again when protection comes
+// back on.
+func TestAFailingStoreIsRetriedWithBackoffAndLoggedOnce(t *testing.T) {
+	env := newPushEnv(t)
+	clock := int64(1_800_000_000)
+	env.pusher.now = func() time.Time { return time.Unix(clock, 0) }
+	dials := 0
+	env.pusher.dial = func(context.Context, string, string) (net.Conn, error) {
+		dials++
+		return nil, errors.New("connection refused")
+	}
+	ctx := context.Background()
+	if err := env.pusher.pushIfChanged(ctx); err == nil {
+		t.Fatal("the first failure must be reported (logged)")
+	}
+	first := dials
+	clock += 30 // inside the 1-minute backoff
+	if err := env.pusher.pushIfChanged(ctx); err != nil || dials != first {
+		t.Fatalf("dialed during backoff (dials %d→%d, err %v)", first, dials, err)
+	}
+	clock += 31 // backoff over: retry, same failure → not logged again
+	if err := env.pusher.pushIfChanged(ctx); err != nil || dials == first {
+		t.Fatalf("retry after backoff: dials=%d err=%v (a repeat of the same failure is not logged again)", dials, err)
+	}
+	if got := env.pusher.retryAt.Sub(time.Unix(clock, 0)); got != 2*time.Minute {
+		t.Fatalf("second backoff = %v, want 2m", got)
+	}
+	for i := 0; i < 12; i++ {
+		clock = env.pusher.retryAt.Unix()
+		_ = env.pusher.pushIfChanged(ctx)
+	}
+	if got := env.pusher.retryAt.Sub(time.Unix(clock, 0)); got != time.Hour {
+		t.Fatalf("backoff cap = %v, want 1h", got)
+	}
+	// Protection coming back on retries right away.
+	env.pusher.poked()
+	before := dials
+	_ = env.pusher.pushIfChanged(ctx)
+	if dials == before {
+		t.Fatal("a poke did not retry")
 	}
 }
 
@@ -143,5 +190,18 @@ func TestPusherSkipsServersThatCannotSync(t *testing.T) {
 	_ = os.WriteFile(env.cfgPath, []byte("server: brook://server?server=203.0.113.9%3A9999&password=x\n"), 0o600)
 	if err := env.pusher.pushIfChanged(context.Background()); err != nil || env.puts != 0 {
 		t.Fatalf("brook server: err=%v puts=%d", err, env.puts)
+	}
+}
+
+// The daemon wires no poke channel, so the pusher notices protection coming back on by itself:
+// the backoff from a failure while the tunnel was down must not delay the first push by an hour.
+func TestProtectionComingBackOnClearsTheBackoff(t *testing.T) {
+	env := newPushEnv(t)
+	env.pusher.retryAt = time.Unix(1_800_000_000, 0).Add(time.Hour)
+	env.protected = false
+	_ = env.pusher.pushIfChanged(context.Background())
+	env.protected = true
+	if err := env.pusher.pushIfChanged(context.Background()); err != nil || env.puts != 1 {
+		t.Fatalf("after protection came back on: err=%v puts=%d (still backing off)", err, env.puts)
 	}
 }
