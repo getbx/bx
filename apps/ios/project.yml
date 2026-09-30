@@ -6,7 +6,6 @@ options:
     iOS: "17.0"
 settings:
   base:
-    DEVELOPMENT_TEAM: XXXXXXXXXX
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "0.0.1"

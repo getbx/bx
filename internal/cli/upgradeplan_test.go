@@ -309,7 +309,7 @@ func TestMacOSUpActionWiresVersionMismatchMessage(t *testing.T) {
 // 走确认这条路的条件是「Guardian 在跑」,不是「保护开着」—— 而 Guardian 在跑、
 // 保护关着,正是任何一次 bx down 之后的常态。上一版把「会断网的升级」写死在哨兵
 // 里,于是同一次运行先打印「当前保护未开启,不会影响网络」,紧接着报「会断网的
-// 升级」,两句自相矛盾。这是 f7f976e 修过的同一个错误换了件衣服。
+// 升级」,两句自相矛盾。这是 9c9d2e3 修过的同一个错误换了件衣服。
 func TestUpgradeCannotAskMessageDoesNotInventAnOutage(t *testing.T) {
 	on := upgradeCannotAskMessage(true)
 	if !strings.Contains(on, "network drops") {

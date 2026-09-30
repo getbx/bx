@@ -35,7 +35,7 @@ func TestRiskyRuleWarningsPublishOnlyTheRiskyClass(t *testing.T) {
 		}
 		if w.Severity != "warn" {
 			t.Errorf("severity = %q,必须是 warn —— error 会把一台工作正常的机器"+
-				"降级成 Needs Attention(11338a0 的教训)", w.Severity)
+				"降级成 Needs Attention(6b660ed 的教训)", w.Severity)
 		}
 	}
 }

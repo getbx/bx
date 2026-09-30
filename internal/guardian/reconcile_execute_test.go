@@ -261,7 +261,7 @@ func TestStartCoreRefusesWhenACoreProcessIsPresent(t *testing.T) {
 		t.Fatalf("Executed = %+v, want skipped/core_process_present", got)
 	}
 	if env.runner.startCount() != 0 {
-		t.Fatal("有 Core 进程在跑还起了第二个 —— af81632 双 Core 的入口")
+		t.Fatal("有 Core 进程在跑还起了第二个 —— 3f4f5d2 双 Core 的入口")
 	}
 }
 

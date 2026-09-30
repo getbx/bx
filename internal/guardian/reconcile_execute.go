@@ -50,7 +50,7 @@ const (
 	// ③c start_core 的三个稳定码。导出:internal/cli 渲染用同一份名字,
 	// 不许两边各抄一份字符串(与 internal/udpsource 那条纪律同源)。
 	//   - core_process_present:扫到 ≥1 个 Core 进程,socket 却不应答 —— 卡住但
-	//     活着,起第二个正是 af81632 双 Core 的入口,本期只显形不处置;
+	//     活着,起第二个正是 3f4f5d2 双 Core 的入口,本期只显形不处置;
 	//   - core_scan_failed:没测成。「问不出来」不是「没有」;
 	//   - start_core_exhausted:本段故障已试满 maxReconcileStartCoreAttempts 次。
 	ReconcileSkipCoreProcessPresent = "core_process_present"

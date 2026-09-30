@@ -591,7 +591,7 @@ Test `internal/cli/rulereview_test.go`
 - [ ] **Step 1: 写失败测试**
 
 1. **每类一条 check、名字唯一**(这一支已经因为同名 check 静默丢过一次安全结论,
-   见 `55ef8ea`);仓库级重名守卫 `internal/cli/doctor_check_names_test.go` 已经存在,
+   见 `3741aa2`);仓库级重名守卫 `internal/cli/doctor_check_names_test.go` 已经存在,
    确认新 check 名不与既有冲突。
 2. **死规则那一行要说出跨了几个版本**;跨版本 > 1 时措辞要让用户知道该打折。
 3. **「没查」必须说出来**(Core 没在跑 / 溢出 / 读不出),不许静默缺席。

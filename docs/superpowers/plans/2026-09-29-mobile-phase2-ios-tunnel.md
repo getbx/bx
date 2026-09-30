@@ -22,7 +22,7 @@ Packet Tunnel 扩展(进程内 libbox 1.14.2),经所有者当前那台服务器�
 - **工程**:`apps/ios/project.yml`(XcodeGen),`Libbox.xcframework` 由
   `scripts/build-libbox-ios.sh` 从 sing-box 同一 tag 源码构建(用 sing-box 自己的 gomobile 分叉),
   不进仓库。只链进扩展。Bundle `com.getbx.bx.ios` / `.tunnel`,App Group `group.com.getbx.bx`,
-  Team `XXXXXXXXXX`,自动签名 + App Store Connect API key。
+  团队 ID 取自本机私有配置,自动签名 + App Store Connect API key。
 - **驱动**:`scripts/ios-dev.sh <scenario>` 构建、装机、以启动参数拉起 App;App 装配置、起隧道、
   跑探测、把 JSON 结果打到 stdout(`devicectl --console` 收)后退出。场景:
   `connect`(真服务器,期望出口 == 服务器 IP)、`deadserver`(代理指向 192.0.2.1,期望请求**失败**)、

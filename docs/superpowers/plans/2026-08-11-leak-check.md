@@ -3940,7 +3940,7 @@ var _ = func() struct{} { _ = runtime.GOOS; _ = exec.Command; _ = strings.TrimSp
 Run: `go test ./internal/cli/ -count=1 && go build ./... && go vet ./... && go test ./... -count=1`,再跑六个交叉编译
 Expected: PASS
 
-> **注意**:`internal/cli` 自 2026-08-09 起在 ubuntu/windows 上编不过(`d8f1d9c`),所以这个包的测试在三条 CI 腿里只有 macOS 那条真跑。交叉编译**必须**手工跑,不能指望 CI。
+> **注意**:`internal/cli` 自 2026-08-09 起在 ubuntu/windows 上编不过(`c7ec8f8`),所以这个包的测试在三条 CI 腿里只有 macOS 那条真跑。交叉编译**必须**手工跑,不能指望 CI。
 
 - [ ] **Step 5: 变异验证**
 

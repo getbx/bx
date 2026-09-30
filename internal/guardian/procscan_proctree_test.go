@@ -160,7 +160,7 @@ func TestScanLinuxProcTreeCountsKernelThreadsAsUnreadable(t *testing.T) {
 
 func TestScanLinuxProcTreeRecognizesDeletedExecutable(t *testing.T) {
 	// 升级把二进制换掉之后,旧 Core 的 /proc/<pid>/exe 读出来是
-	// "/path/bx (deleted)"——按 af81632 的教训,漏认它就是双 Core;
+	// "/path/bx (deleted)"——按 3f4f5d2 的教训,漏认它就是双 Core;
 	// argv[0] 这条兜底也在,但 exe 这半不许自己先漏。
 	root := t.TempDir()
 	writeProcEntry(t, root, 4242, "bx", 'S', []string{"weird", "run"}, 0, "/usr/local/bin/bx (deleted)")

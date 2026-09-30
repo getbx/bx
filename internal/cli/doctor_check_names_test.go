@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// **仓库级守卫,推广 55ef8ea。** 那次事故的形状是:同一个 check name 被
+// **仓库级守卫,推广 3741aa2。** 那次事故的形状是:同一个 check name 被
 // rep.addCheck 调了两次,--json 消费方(agent/MCP,这是这条路径唯一的读者)按
 // 名字取,只会拿到其中一条,静默丢掉另一条的结论——那次撞的是
 // risky_direct_rule(多条危险直连合并前),这条守卫钉住的是**任何**未来会撞
@@ -54,6 +54,6 @@ func TestDoctorReportHasNoDuplicateCheckNames(t *testing.T) {
 	if len(dups) > 0 {
 		sort.Strings(dups)
 		t.Fatalf("同名 check 出现了多次:%v —— 按名字取的消费方只会拿到其中一条,"+
-			"静默丢掉其余结论(55ef8ea 就是这个形状,那次撞的是 risky_direct_rule)", dups)
+			"静默丢掉其余结论(3741aa2 就是这个形状,那次撞的是 risky_direct_rule)", dups)
 	}
 }

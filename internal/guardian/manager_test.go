@@ -804,7 +804,7 @@ func TestManagerRecoverDNSRestoreFailureCannotPublishOff(t *testing.T) {
 }
 
 // TestBeginStartupRecoveryFencesUpBeforeRecoverRuns is the regression guard
-// for the fail-closed window fd1fd90 opened: the daemon reorder makes the
+// for the fail-closed window d2f190b opened: the daemon reorder makes the
 // LocalAPI socket observable before the startup Recover call actually runs
 // (it moved to a background goroutine), so a client racing to connect the
 // instant the socket exists could win Manager's single-slot mutation channel

@@ -286,7 +286,7 @@ func TestReconcileOnceHoldsWhenStartupRecoveryIsBlocked(t *testing.T) {
 }
 
 // 所有权不确定是**锁存的 fail-closed 拒绝**,循环撞上它 = 本轮什么都不做,
-// 而且**绝不由循环去清它**:清掉等于自动推翻一次刻意的拒绝,正是 af81632 被回退时
+// 而且**绝不由循环去清它**:清掉等于自动推翻一次刻意的拒绝,正是 3f4f5d2 被回退时
 // 那个双 Core 风险的入口。
 func TestReconcileOnceNeverClearsTheOwnershipUncertainLatch(t *testing.T) {
 	env := newManagerTestEnv(t)

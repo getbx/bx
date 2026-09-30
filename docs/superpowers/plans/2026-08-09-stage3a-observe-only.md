@@ -284,7 +284,7 @@ func TestReconcileOnceYieldsSilentlyWhenMutationsAreBusy(t *testing.T) { /* … 
 `reconcileOnce`:读三道栅栏 → 组 `reconcileInput` → `decide` → 返回。**不碰任何 mutating hook。**
 
 循环:`daemon.go` 里照 `trackStartupRecovery` 的形状起一条 goroutine,**带 `recover()`**
-(理由与 `75feb1f` 相同:这条 goroutine 的 panic 会打死 Guardian,而 launchd 的 KeepAlive
+(理由与 `c0331b2` 相同:这条 goroutine 的 panic 会打死 Guardian,而 launchd 的 KeepAlive
 会把它拉起来再 panic —— 崩溃循环)。
 
 日志:**只在 `reconcileDecision` 与上一轮不同时**打一行

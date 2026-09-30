@@ -1876,7 +1876,7 @@ func TestSameServerNameIgnoresCaseAndSurroundingSpace(t *testing.T) {
 // 一行代码、一严一松是自相矛盾的)对**同一个请求里的第二条链接**逐字成立:
 // `add` 与 `replace` 都收 `udp`,都原样写进配置。
 //
-// 后果是降级不是崩:专用 UDP 传输起不来时按 `113876b` 回落主传输,`bx status`
+// 后果是降级不是崩:专用 UDP 传输起不来时按 `23fb30c` 回落主传输,`bx status`
 // 的 UDPNotice 会说出来 —— 但用户以为自己配好了 QUIC 加速,而它从第一秒起就
 // 没生效过,配置里那一行长得和一条好链接一模一样。
 //

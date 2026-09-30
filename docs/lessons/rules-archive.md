@@ -44,7 +44,7 @@ global、china 列表整个不生效,那 22 条全在干活,照着删会让 22 �
 **`bx status` 只发危险那一类,severity=warn**:冗余与失效是建议、对任何成熟配置
 都不为零,放进常驻面板会变墙纸、把真正要紧的这一条一起淹掉(与项目所有者否掉
 「Direct rules: N unreachable」常驻红字同一条判断);它们留在 `bx doctor` 里,
-那是诊断命令。severity 取 `warn` 不是 `error`——`11338a0` 之后只有 `error` 会把
+那是诊断命令。severity 取 `warn` 不是 `error`——`6b660ed` 之后只有 `error` 会把
 总状态降级成 `Needs Attention`,一条配置建议不该让工作正常的机器显示需注意,
 那正是 Tailscale 共存 advisory 当初犯的错。该告警在 `Run()` 里算好一次传进
 `serveControlWithPathRecovery`(第 17 个形参),不在读状态那条路上重算——菜单每
@@ -144,7 +144,7 @@ bx status --json | jq '.rule_history'
 
 > **2026-08-24 逐条复核过一遍,五条里四条已经过时** —— `renderUpSummary` 只显示
 > `Warnings[0]`(早已改成遍历且有守卫,变异复核过)、`configWarnings` 那一跳无测试
-> (`3d58914` 关上)、`builtinListLines` 的 Kind 静默消失(`60550bf` 修掉)、内建列表
+> (`27dcc64` 关上)、`builtinListLines` 的 Kind 静默消失(`2b3936d` 修掉)、内建列表
 > 用内嵌快照(2026-08-17 的 wrong-reference-object 修复早就让它读 Core 那份、三种
 > 结局分得清)。
 >

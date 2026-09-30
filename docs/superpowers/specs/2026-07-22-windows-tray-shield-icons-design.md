@@ -2,7 +2,7 @@
 
 - 日期:2026-07-22
 - 范围:**纯 Windows**(Go + winres 资源)。不改 macOS。
-- 前置:子项目②托盘 App(`internal/tray`,`bx tray`)+ 子项目③打包(`winres/` + `rsrc_windows_*.syso`)已在仓库(HEAD `1777910`)。
+- 前置:子项目②托盘 App(`internal/tray`,`bx tray`)+ 子项目③打包(`winres/` + `rsrc_windows_*.syso`)已在仓库(HEAD `03a6163`)。
 
 ## 背景与动机
 

@@ -98,7 +98,7 @@
 
 `/var/lib/bx` 是 `drwx------ root`(实测),而文件本身 0644 —— 也就是说
 `sudo bx doctor` 读得到、`bx doctor` 读不到。直接读文件会立刻重演 china 列表刚修完
-的那个分裂(见 `2f3d273`)。
+的那个分裂(见 `dbb3192`)。
 
 而 Core 的控制 socket 是 **0666**(非 root 可读,`bx status`/`bx mcp` 都靠这一点),
 `bx status` 已经从它拿 `rules[]`。**这份历史走同一条路。**

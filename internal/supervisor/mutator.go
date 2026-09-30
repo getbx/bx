@@ -97,7 +97,7 @@ func (m *liveMutator) Reconnect() error {
 }
 
 // 这里曾有一个 SetServerBypass:零生产调用方,而它的 store 分支只换路由那一半、
-// 让 servers 留在旧值 —— 谁哪天把它接上,就会从另一扇门把 a8c670f 那个洞
+// 让 servers 留在旧值 —— 谁哪天把它接上,就会从另一扇门把 971b6d6 那个洞
 //(屏障开口与实际服务器脱节)放回来。发布 bypass 的唯一入口是
 // bypassStore.set(三份视图一起给),经 newBypassRefresher 调用。
 

@@ -408,7 +408,7 @@ EOF
 - Produces: 无新符号(行为改变 + 一行新日志 `guardian_stale_core_record_after_exit`)。
 - Consumes: 既有 `newRecordedProcessRunner(t) (*ExecCoreRunner, Process, *watchTestProcessOperations)`、`swapGuardianLogOutput(w io.Writer) func()`(在 `manager_test.go`,同包可用)。
 
-**背景**:十五个 uncertain 产地里,`process.go:594` 是最荒谬的一个 —— **手里握着「安全」的证明**(两个调用方传进来的都是 `ErrProcessNotRunning` 那一族:OS 已确认进程消失,或记录的身份已经不在那个 PID 上),只因为删不掉一个 JSON 文件,就宣布所有权不确定。`/var/lib/bx` 上任何一次文件系统抖动都能锁死 daemon。与 `603b602` 当初对 `Existing()` 的判断同源。
+**背景**:十五个 uncertain 产地里,`process.go:594` 是最荒谬的一个 —— **手里握着「安全」的证明**(两个调用方传进来的都是 `ErrProcessNotRunning` 那一族:OS 已确认进程消失,或记录的身份已经不在那个 PID 上),只因为删不掉一个 JSON 文件,就宣布所有权不确定。`/var/lib/bx` 上任何一次文件系统抖动都能锁死 daemon。与 `fd44311` 当初对 `Existing()` 的判断同源。
 
 **这是一处准入放宽**:改完之后,这类退出会走 `handleUnexpectedExit` 的正常分支(装屏障 + 重启 Core),而不是锁存拒绝。所以下面既有「放宽被看着」的测试,也有「不许顺手放宽别处」的越界守卫。
 
@@ -483,7 +483,7 @@ func (r *ExecCoreRunner) finishExistingWatch(process Process, exit chan<- error,
 		// ErrProcessNotRunning 那一族。失败的只是删一个 JSON 文件。
 		//
 		// 握着「安全」的证明却宣布所有权不确定,是十五个产地里最荒谬的一个:
-		// /var/lib/bx 上任何一次文件系统抖动都能锁死 daemon。与 603b602 当初对
+		// /var/lib/bx 上任何一次文件系统抖动都能锁死 daemon。与 fd44311 当初对
 		// Existing() 的判断同源 —— 清不掉一个陈旧文件不等于所有权存疑,后者是给
 		// 「进程还在但身份不匹配」准备的语义。
 		//
@@ -529,7 +529,7 @@ fix(guardian): 已证明安全的清理失败不再产出所有权不确定
 finishExistingWatch 手里握着「安全」的证明(OS 已确认被观察的进程消失),
 只因为删不掉一份 JSON 记录就宣布所有权不确定 —— /var/lib/bx 上任何一次
 文件系统抖动都能锁死 daemon。改为记日志、照常按「进程已消失」处理,与
-603b602 当初对 Existing() 的判断同源。
+fd44311 当初对 Existing() 的判断同源。
 
 Stop 与 Existing 那几处处置的是可能仍属于活进程的记录,由越界守卫测试钉住
 不动;Start 自己那条 wait goroutine 同源但单独一次提交,便于各自回退。
@@ -551,7 +551,7 @@ EOF
 - Produces: 无新符号(行为改变 + 复用 Task 3 那行日志 `guardian_stale_core_record_after_exit`)。
 - Consumes: Task 3 已经确立的判断(清不掉陈旧记录 ≠ 所有权存疑)。
 
-**背景与它为什么比 Task 3 更该改**:这条 goroutine 里 `started.Wait()` **已经返回** —— 那是 `waitpid`,是这个系统里对「进程确定没了」最强的一种证明,比 Task 3 那处(靠 `Inspect` 返回 `ErrProcessNotRunning`)还硬。握着这样一份证明,只因为删不掉一个 JSON 就宣布所有权不确定,与 `603b602` 当初对 `Existing()` 做的判断直接冲突。**这是一处准入放宽**:改完之后这类退出会走 `handleUnexpectedExit` 的正常分支(装屏障 + 重启 Core),而不是锁存拒绝 —— 所以下面那条测试就是专门盯着这次放宽的。
+**背景与它为什么比 Task 3 更该改**:这条 goroutine 里 `started.Wait()` **已经返回** —— 那是 `waitpid`,是这个系统里对「进程确定没了」最强的一种证明,比 Task 3 那处(靠 `Inspect` 返回 `ErrProcessNotRunning`)还硬。握着这样一份证明,只因为删不掉一个 JSON 就宣布所有权不确定,与 `fd44311` 当初对 `Existing()` 做的判断直接冲突。**这是一处准入放宽**:改完之后这类退出会走 `handleUnexpectedExit` 的正常分支(装屏障 + 重启 Core),而不是锁存拒绝 —— 所以下面那条测试就是专门盯着这次放宽的。
 
 - [ ] **Step 1: 改测试(先改测试,让它先红)**
 
@@ -559,7 +559,7 @@ EOF
 
 ```go
 // waitpid 已经返回 —— 这是「进程确定没了」最强的一种证明。握着它却因为删不掉
-// 一份 JSON 记录就宣布所有权不确定,与 603b602 当初对 Existing() 的判断直接
+// 一份 JSON 记录就宣布所有权不确定,与 fd44311 当初对 Existing() 的判断直接
 // 冲突,而后果是一次文件系统抖动锁死 daemon。
 //
 // 这条测试原名 ...PublishesUncertainExit,编码的正是被推翻的那个行为。**不删,
@@ -620,7 +620,7 @@ Expected: `TestExecCoreRunnerRecordRemovalFailureAfterWaitIsNotOwnershipUncertai
 			// **waitpid 已经返回** —— 进程确定没了,失败的只是删一份 JSON。
 			// 与 finishExistingWatch 同源、证明更硬:那处靠 Inspect 报
 			// ErrProcessNotRunning,这处是内核亲口告诉我们子进程收割完了。
-			// 清不掉一个陈旧文件不等于所有权存疑(603b602 对 Existing() 的判断)。
+			// 清不掉一个陈旧文件不等于所有权存疑(fd44311 对 Existing() 的判断)。
 			log.Printf("guardian_stale_core_record_after_exit pid=%d generation=%s clear_failed=%v",
 				process.PID, process.Generation, err)
 		}
@@ -659,7 +659,7 @@ fix(guardian): Start 的 wait goroutine 也不再产出所有权不确定
 
 waitpid 已经返回 —— 这是「进程确定没了」最强的一种证明,比 finishExistingWatch
 那处(靠 Inspect 报 ErrProcessNotRunning)还硬。握着它却因为删不掉一份 JSON
-就宣布所有权不确定,与 603b602 对 Existing() 的判断直接冲突。
+就宣布所有权不确定,与 fd44311 对 Existing() 的判断直接冲突。
 
 TestExecCoreRunnerRecordRemovalFailurePublishesUncertainExit 编码的正是被推翻的
 那个行为:改断言而不是删掉,它守着的另外两件事(记录不许被静默丢掉、Existing
@@ -1529,7 +1529,7 @@ EOF
 - Consumes: Task 6 的 `recheckOwnershipUncertain`。
 - Produces: 无新符号。
 
-**背景**:`Migrate` 是 `bx up` 在一台还带 legacy Core 的机器上走的那条路,同样是**用户显式说的 on**。它今天的短路与 `upLocked` 那处一模一样(`uncertainOwnership(m.current, nil)`),漏掉它等于修了一半 —— 而「只修一跳是假绿」是这个仓库反复付过学费的形状(`60b76f3`)。
+**背景**:`Migrate` 是 `bx up` 在一台还带 legacy Core 的机器上走的那条路,同样是**用户显式说的 on**。它今天的短路与 `upLocked` 那处一模一样(`uncertainOwnership(m.current, nil)`),漏掉它等于修了一半 —— 而「只修一跳是假绿」是这个仓库反复付过学费的形状(`b6d8916`)。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -1537,7 +1537,7 @@ EOF
 
 ```go
 // Migrate 是 bx up 在还带 legacy Core 的机器上走的那条路,同样是用户显式说的 on。
-// 漏掉它就是「只修一跳」——这个仓库为这个形状付过学费(60b76f3)。
+// 漏掉它就是「只修一跳」——这个仓库为这个形状付过学费(b6d8916)。
 func TestMigrateReVerifiesOwnershipWhenTheSystemIsClean(t *testing.T) {
 	// 释放要跨一个沉降窗口(拒绝不用)。
 	restore := coreScanSettle
@@ -1587,7 +1587,7 @@ Expected: `TestMigrateReVerifiesOwnershipWhenTheSystemIsClean` FAIL;第二条 PA
 
 ```go
 	// 与 upLocked 同一条规矩、同一个助手:Migrate 是 bx up 在一台还带 legacy Core
-	// 的机器上走的那条路,同样是用户显式说的 on。只改一处就是假绿(60b76f3 的教训)。
+	// 的机器上走的那条路,同样是用户显式说的 on。只改一处就是假绿(b6d8916 的教训)。
 	if err := m.recheckOwnershipUncertain("migrate"); err != nil {
 		return err
 	}
@@ -1621,7 +1621,7 @@ git commit -m "$(cat <<'EOF'
 feat(guardian): Migrate 与 Up 同样重新求证所有权
 
 Migrate 是 bx up 在还带 legacy Core 的机器上走的那条路,同样是用户显式说的 on,
-短路形状与 upLocked 那处一模一样。只改一处就是假绿(60b76f3 的教训)。
+短路形状与 upLocked 那处一模一样。只改一处就是假绿(b6d8916 的教训)。
 
 Co-Authored-By: Claude <noreply@anthropic.com>
 EOF

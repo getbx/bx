@@ -6,7 +6,7 @@ DONE_WITH_CONCERNS
 
 ## Commit
 
-`65a4d96 feat(macos): rebind underlay without releasing capture`
+`33ce291 feat(macos): rebind underlay without releasing capture`
 
 The commit contains only the seven Task 3 source and test files. This report is intentionally outside that source-only commit.
 

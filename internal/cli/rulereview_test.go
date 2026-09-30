@@ -381,7 +381,7 @@ func TestProxyOnlyBuiltinListHitsAreFiledAsExceptionsNotSafeToDelete(t *testing.
 // 被判「生效中的例外」)——两条 finding 必须落进**两条独立的行**、**两个独立的
 // 计数**、以及(--json 路径)**两个不同的 check name**,不许合并成一行也不许共用
 // 同一个 check name(check name 撞了,agent/MCP 按名字取只会拿到其中一条,
-// 55ef8ea 就是这个形状,只是那次撞的是 ClassRisky)。
+// 3741aa2 就是这个形状,只是那次撞的是 ClassRisky)。
 func TestBuiltinListHitsSplitByKindIntoTwoLinesAndTwoCheckNames(t *testing.T) {
 	rep := rulereview.NewReport([]rulereview.Finding{
 		{

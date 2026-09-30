@@ -215,7 +215,7 @@ func TestHarnessBarrierCarveOutFollowsCurrentServerOnly(t *testing.T) {
 
 	// **启动后先看一次。** 只在切换之后看是不够的:切换会用刷新算出的那份
 	// 干净集合**整体替换**掉 store,于是一个只在启动接线上开的洞会被当场抹掉。
-	// 实测过 —— 把 run.go 的 wireBypass 复刻回 a8c670f(serverStatics 传成 staticA,
+	// 实测过 —— 把 run.go 的 wireBypass 复刻回 971b6d6(serverStatics 传成 staticA,
 	// 启动时的开口里真的多出 203.0.113.77/32、日志里都印出来了),只看切换之后的
 	// 版本**照样 PASS**。而屏障在那个窗口里是真的会被装上的(down / update 随时发生,
 	// 不必等谁去切服务器),所以这一眼不是锦上添花。

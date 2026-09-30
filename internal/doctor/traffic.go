@@ -107,7 +107,7 @@ func trafficChecks(f *TrafficFact) []Check {
 	//
 	// **全部规则合并成恰好一条 check**,与 riskyRuleFinding 同一条理由:check 名
 	// 的整个存在理由是「按名字取」,每条规则各产出一条同名 check 会让 --json 的
-	// 消费方(agent/MCP)只拿到其中一条,静默丢掉其余 —— 55ef8ea 那次事故的形状,
+	// 消费方(agent/MCP)只拿到其中一条,静默丢掉其余 —— 3741aa2 那次事故的形状,
 	// 仓库级守卫 TestDoctorReportHasNoDuplicateCheckNames 正盯着它。
 	// **详情不截断**:少报一条规则等于没报那一条,而这一类恰恰是要人去改配置的。
 	if failing := report.FailingRules(); len(failing) > 0 {

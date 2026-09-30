@@ -88,7 +88,7 @@ func TestParseProcArgsRejectsMalformed(t *testing.T) {
 // 判据的核心:认得出 Core,且**不靠具体路径**认。
 func TestLooksLikeCoreIgnoresExecutablePath(t *testing.T) {
 	// 更新之后旧版 Core 跑在另一个路径下。用「路径 == 当前 Core 路径」做判据
-	// 会漏认它,于是起第二个 Core —— 正是 af81632 被回退的那个风险。
+	// 会漏认它,于是起第二个 Core —— 正是 3f4f5d2 被回退的那个风险。
 	for _, executable := range []string{
 		"/Library/Application Support/bx/runtime/dev/bx",
 		"/Library/Application Support/bx/runtime/v0.2.7/bx",

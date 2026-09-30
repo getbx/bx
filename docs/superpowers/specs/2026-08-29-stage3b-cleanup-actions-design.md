@@ -32,7 +32,7 @@
   判据(孤儿 Core vs 用户手起的 Core),那是 ③c 的题。
 - **`start_core` 不授权**:decide 的注释已写明,`CoreSocket==False` 的语义是
   「socket 没应答」不是「没有 Core 在跑」——卡住但活着的 Core 会让这条提议
-  出现,而按它起新 Core 正是 af81632 双 Core 的入口。授权它的前置(照 ③a
+  出现,而按它起新 Core 正是 3f4f5d2 双 Core 的入口。授权它的前置(照 ③a
   设计原文):准入判据换 `scanRunningCores`、先解 Uncertain 锁存、且「有限次数」
   ——三样都不在本期。
 - **「装屏障」这个动作依然不存在**,不是被推迟:瞬时网关探测失败会把它降级成

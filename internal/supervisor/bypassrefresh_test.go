@@ -600,7 +600,7 @@ func TestRunFeedsBypassWiringTheLoopSafeResolver(t *testing.T) {
 
 // 屏障开口那条守卫此前只钉了**启动**那一次转置(wireBypass 的入参),没钉**刷新**
 // 那一次发布。而当时的 `d.store.set(next, staticA, serverStatic)` 里后两个实参同型
-// (都是 map[string][]netip.Addr),写反了照样编译 —— 这正是 6c28339 把 servers
+// (都是 map[string][]netip.Addr),写反了照样编译 —— 这正是 ca4c18e 把 servers
 // 视图从 []netip.Addr 改成 map 时丢掉的那道编译期保护。
 //
 // (2026-09-25 起 store 不再存静态表,set 只剩 `set(next, serverStatic)`;写反没有了,

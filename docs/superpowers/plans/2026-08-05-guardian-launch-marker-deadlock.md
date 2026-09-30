@@ -10,7 +10,7 @@
 
 ## 背景
 
-上一轮(`f141cca..947a56a`)修好了「`owned` 记录 + 已死 PID」这一类卡死。最终复审指出**同一事故形态还有一个未覆盖的分支**:
+上一轮(`d2fb091..602fbd1`)修好了「`owned` 记录 + 已死 PID」这一类卡死。最终复审指出**同一事故形态还有一个未覆盖的分支**:
 
 `processRecordLaunching` 标记在 `process.go:142` 于 spawn **之前**落盘、PID 恒为 0,只在本进程内由 `clearLaunchMarker` 清理。若 Guardian 在「写完标记、还没保存 owned 记录」之间被 SIGKILL 或断电,标记会**永久残留**:
 
@@ -25,7 +25,7 @@
 
 原文写「`launching` 标记 PID 恒为 0,**PID==0 结构上不可能对应任何活进程**」——**这是范畴错误**。
 
-追该标记的出身(`3ba59fc fix(macos): retain guardian ownership across launch failures`):
+追该标记的出身(`6f0da8a fix(macos): retain guardian ownership across launch failures`):
 标记在 `operations.Start()` **之前**落盘,只有 `Wait()` 证实清理完成后才清除。因此它的语义是:
 
 > **「我可能已经 fork 了一个连 PID 都没来得及记录的 Core」**

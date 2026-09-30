@@ -30,7 +30,7 @@ const (
 
 	// DefaultThroughputHistoryPath 是按服务器记的吞吐历史。**导出**是因为
 	// 卸载那一侧也要点名删它(逐文件删,绝不整目录删 /var/lib/bx —— 那会把
-	// brook/sing-box 二进制与 china 列表一起删掉,603b602 的教训)。
+	// brook/sing-box 二进制与 china 列表一起删掉,fd44311 的教训)。
 	DefaultThroughputHistoryPath = guardianStateDirectory + "/throughput-history.json"
 )
 

@@ -872,7 +872,7 @@ func TestMacMenuNeverReportsOffWhileTheCoreSocketAnswers(t *testing.T) {
 	// `coreSocketAnswering: false,` —— 探测照跑、结果被丢掉,上面两条断言、整套
 	// Swift 套件、以及 StoppedDiagnosisTests(它测的是纯函数,喂什么算什么)全绿,
 	// 而 Guardian 挂掉、Core 仍在转发流量时菜单就此报 `.off(.serviceStopped)`:
-	// 灰盾 + Quit 立即退出 + 路由与 DNS 全留在原处。那正是 99079bf 修掉的那个 bug。
+	// 灰盾 + Quit 立即退出 + 路由与 DNS 全留在原处。那正是 4262a59 修掉的那个 bug。
 	//
 	// 所以要钉的是**数据流**:这一项的实参必须来自那次探测的返回值。
 	probeBinding := regexp.MustCompile(`let\s+core\s*=\s*probeCoreControlSocket\(\)`)

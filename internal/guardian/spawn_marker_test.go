@@ -151,7 +151,7 @@ func TestExistingHealsSpawnedMarkerWhoseProcessIsDead(t *testing.T) {
 }
 
 // spawned 且进程已死时,Existing 放行只是第一跳:Start 紧接着看到同一个文件也
-// 必须放行,否则用户可见行为与修复前一模一样(60b76f3 的教训:只修 Existing
+// 必须放行,否则用户可见行为与修复前一模一样(b6d8916 的教训:只修 Existing
 // 一跳是假绿)。
 func TestStartProceedsPastDeadSpawnedMarker(t *testing.T) {
 	started := newStartTestProcess(53)
@@ -274,7 +274,7 @@ func TestExistingRefusesLaunchingMarkerWhenScanFails(t *testing.T) {
 }
 
 // Existing 放行只是第一跳:Start 紧接着看到同一个文件也必须放行,
-// 否则用户可见行为与修复前一模一样(60b76f3 的教训)。
+// 否则用户可见行为与修复前一模一样(b6d8916 的教训)。
 func TestStartProceedsPastLaunchingMarkerWhenNoCoreRunning(t *testing.T) {
 	started := newStartTestProcess(71)
 	t.Cleanup(started.release)

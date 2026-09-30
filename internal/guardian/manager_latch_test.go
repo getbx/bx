@@ -592,7 +592,7 @@ func TestStartupRecoveryDoesNotReVerifyOwnership(t *testing.T) {
 }
 
 // Migrate 是 bx up 在还带 legacy Core 的机器上走的那条路,同样是用户显式说的 on。
-// 漏掉它就是「只修一跳」——这个仓库为这个形状付过学费(60b76f3)。
+// 漏掉它就是「只修一跳」——这个仓库为这个形状付过学费(b6d8916)。
 func TestMigrateReVerifiesOwnershipWhenTheSystemIsClean(t *testing.T) {
 	// 释放要跨一个沉降窗口(拒绝不用)。
 	restore := coreScanSettle

@@ -85,7 +85,7 @@ func TestDoctorNamesFailingUserRules(t *testing.T) {
 // **多条成片失败的规则合并成恰好一条 check,而且一条都不许少说。**
 //
 // 每条规则各产出一条同名 check 的话,--json 的消费方(agent/MCP,按名字取)
-// 只会拿到其中一条 —— 55ef8ea 那次事故的形状,riskyRuleFinding 已经为同一个
+// 只会拿到其中一条 —— 3741aa2 那次事故的形状,riskyRuleFinding 已经为同一个
 // 理由合并过一次。而合并之后另一个陷阱是「只说第一条」:那会让用户改完一条
 // 以为完事了。
 func TestDoctorMergesFailingRulesIntoOneCheckThatNamesThemAll(t *testing.T) {

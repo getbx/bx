@@ -303,7 +303,7 @@ func (r *ExecCoreRunner) Start(ctx context.Context, options CoreStartOptions) (P
 			// **waitpid 已经返回** —— 进程确定没了,失败的只是删一份 JSON。
 			// 与 finishExistingWatch 同源、证明更硬:那处靠 Inspect 报
 			// ErrProcessNotRunning,这处是内核亲口告诉我们子进程收割完了。
-			// 清不掉一个陈旧文件不等于所有权存疑(603b602 对 Existing() 的判断)。
+			// 清不掉一个陈旧文件不等于所有权存疑(fd44311 对 Existing() 的判断)。
 			log.Printf("guardian_stale_core_record_after_exit pid=%d generation=%s clear_failed=%v",
 				process.PID, process.Generation, err)
 		}
@@ -472,7 +472,7 @@ func (r *ExecCoreRunner) refuseLiveLaunchMarker(record processRecord) error {
 	}
 	if record.PID <= 0 {
 		// 与 Existing() 同一判据:Existing 放行而 Start 拒绝,等于没修
-		// (60b76f3 的教训:只修一跳是假绿)。
+		// (b6d8916 的教训:只修一跳是假绿)。
 		return r.resolveOrphanLaunchMarker(record, "start")
 	}
 	if _, err := r.operations().Inspect(record.PID); err != nil {
@@ -803,7 +803,7 @@ func (r *ExecCoreRunner) finishExistingWatch(process Process, exit chan<- error,
 		// ② 那个 PID 若真还活着,下一次 Start 会重新 Inspect 它并照旧 fail-closed。
 		//
 		// 握着「安全」的证明却宣布所有权不确定,是十五个产地里最荒谬的一个:
-		// /var/lib/bx 上任何一次文件系统抖动都能锁死 daemon。与 603b602 当初对
+		// /var/lib/bx 上任何一次文件系统抖动都能锁死 daemon。与 fd44311 当初对
 		// Existing() 的判断同源 —— 清不掉一个陈旧文件不等于所有权存疑,后者是给
 		// 「进程还在但身份不匹配」准备的语义。
 		//

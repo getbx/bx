@@ -287,7 +287,7 @@ func TestExecCoreRunnerWaitClearsOwnedRecordBeforePublishingExit(t *testing.T) {
 }
 
 // waitpid 已经返回 —— 这是「进程确定没了」最强的一种证明。握着它却因为删不掉
-// 一份 JSON 记录就宣布所有权不确定,与 603b602 当初对 Existing() 的判断直接
+// 一份 JSON 记录就宣布所有权不确定,与 fd44311 当初对 Existing() 的判断直接
 // 冲突,而后果是一次文件系统抖动锁死 daemon。
 //
 // 这条测试原名 ...PublishesUncertainExit,编码的正是被推翻的那个行为。**不删,

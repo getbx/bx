@@ -216,7 +216,7 @@ Guardian 会在二进制换到一半时装上屏障、fork 一个新 Core。
 欠条时漏掉的那一半。** 删欠条的依据是「升级停机不再改写 `desired`」,而那只在
 **新** Guardian 服务那次停机时成立;第一次升级面对的一定是旧的那个,它的
 `Manager.Down` **无条件** `SaveDesired(DesiredOff)`(`git show
-d1abe81:internal/guardian/manager.go`;旧的 `?reason=upgrade` 只保住欠条,从不
+5c80441:internal/guardian/manager.go`;旧的 `?reason=upgrade` 只保住欠条,从不
 抑制那次写入)。于是停机之后盘上是一句**自洽的**假话:`desired=off`、没有挂起、
 没有欠条 —— `Diverge` 一个字都不说,而一次崩溃就让重跑读到 off:「恢复保护」从
 计划里消失,升级还会报完成 = 永久无保护。

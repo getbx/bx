@@ -78,7 +78,7 @@ func parseProcStatusUID(raw []byte) (int, error) {
 //
 // /proc/<pid>/exe 读不出(权限、进程刚退出)不算致命:looksLikeCore 有
 // argv[0] 兜底;读出来带 " (deleted)" 尾巴(升级换掉了二进制、旧 Core 还在跑)
-// 必须剥掉再判——漏认一个正在跑的旧版 Core 就是 af81632 那个双 Core 风险。
+// 必须剥掉再判——漏认一个正在跑的旧版 Core 就是 3f4f5d2 那个双 Core 风险。
 func scanLinuxProcTree(root string) (enumerated, kernel, readable int, cores []Process) {
 	entries, err := os.ReadDir(root)
 	if err != nil {

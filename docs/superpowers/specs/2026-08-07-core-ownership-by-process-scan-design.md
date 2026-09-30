@@ -14,11 +14,11 @@ Guardian 在 fork Core 之前先落一个 `launching` 标记(PID 为 0)。如果
 
 ### 为什么之前两次都没解决
 
-**`af81632`(已回退)** 的判据是「`launching` 标记 PID 恒为 0,结构上不可能对应任何
+**`3f4f5d2`(已回退)** 的判据是「`launching` 标记 PID 恒为 0,结构上不可能对应任何
 活进程」。复审推翻:那是范畴错误。`PID==0` 不是「没有进程」,是「连 PID 都没有、
 **无法向 OS 求证**」——最强的不确定。按该判据放宽会造成真实双 Core。
 
-**`e7e413c`(两段式标记,已合入)** 让 fork 一返回就落一条带 PID 的 `spawned` 记录,
+**`191528d`(两段式标记,已合入)** 让 fork 一返回就落一条带 PID 的 `spawned` 记录,
 把窗口从「fork → Inspect → verify → 写 owned」缩到「fork → 一次写盘」。**但没让
 `launching` 变安全**:`spawned` 那次写盘**本身**失败时(磁盘错误),fork 已经发生而
 盘上仍只有 `launching`。既有测试
@@ -46,7 +46,7 @@ Guardian 在 fork Core 之前先落一个 `launching` 标记(PID 为 0)。如果
 
 **不能用「可执行路径 == 我当前的 Core 路径」。** 更新之后,旧版 Core 跑的是
 `runtime/v0.2.7/bx`,而当前 Core 路径是 `runtime/dev/bx`。一个**还活着的旧版 Core
-会被判成「不存在」**,于是起第二个 —— 正是 `af81632` 被回退的那个双 Core 风险换了
+会被判成「不存在」**,于是起第二个 —— 正是 `3f4f5d2` 被回退的那个双 Core 风险换了
 个入口。
 
 判据取:

@@ -5,8 +5,8 @@
 DONE
 
 - Requirements source: `task-7-brief.md`
-- Base commit: `65ad47e124ab6a065699ff1b0b4cbe151587752d`
-- Implementation commit: `3801a02`
+- Base commit: `5964817555a60915e2686e9272d38b2a1bd8406a`
+- Implementation commit: `a430d28`
 - 未读取整份计划替代 brief。
 
 ## 改动
@@ -215,7 +215,7 @@ sudo，也未修改本机网络。
 ### 状态与提交
 
 - 状态：DONE
-- Fix commit：`5960ecaf88555eaabbaac6c3725d904a172759e4`
+- Fix commit：`2b64066f5d73ddfa7527792b24b3efcdf50ccfa9`
 - 范围严格限于 controller 指定的 MCP reconnect、Guardian recovery
   client、CLI legacy fallback 输出、BxMenu Unix client / parser / failure
   presentation；未扩展其他 MCP mutator。
@@ -379,7 +379,7 @@ git diff --check
 ### 状态与提交
 
 - 状态：DONE
-- Fix commit：`d66c8877d39e7d0d428d8a8d44d9571ee9ac60cf`
+- Fix commit：`eac34091620f2ffb401cda2ce1f574a4620e17b6`
 - 范围仅限 controller 指定的两个 Swift 生命周期问题：BxMenu recovery
   observation 的替换 ID，以及 Guardian Unix client 的请求级 deadline。
 
@@ -476,7 +476,7 @@ git diff --check
 ### 状态与提交
 
 - 状态：DONE
-- Fix commit：`32606cab534094b302815c1bdf2722a314fe4e22`
+- Fix commit：`ef3f404b439b1ec65c79b8e7a81844608eba236c`
 - 范围仅限 GuardianClient Swift 的 request-wide hard deadline 边界。
 
 ### 修复内容
@@ -543,7 +543,7 @@ git diff --check
 ### 状态与提交
 
 - 状态：DONE
-- Fix commit：`6d51c5c46f28c781a33af073a5af1d33fe78127f`
+- Fix commit：`26eb0a655e797078c88396665a26da17b3ce8065`
 - 范围仅限 GuardianClient 成功 JSON decode 后的 request-wide hard deadline
   checkpoint。
 

@@ -99,7 +99,7 @@ func nextReconcileInterval(unchangedRounds int) time.Duration {
 // 一个内核状态都不碰。
 //
 // 真正不许动的是**一样东西**:m.current.Uncertain。那是一个存在意义就是「拒绝」
-// 的 fail-closed 判断,由循环去清等于自动推翻一次刻意的拒绝(af81632 那个双
+// 的 fail-closed 判断,由循环去清等于自动推翻一次刻意的拒绝(3f4f5d2 那个双
 // Core 风险的入口),由 TestReconcileOnceNeverClearsTheOwnershipUncertainLatch
 // 钉住。
 //

@@ -31,12 +31,19 @@ build)
 	(cd apps/ios && xcodegen generate --quiet)
 	dev="$(device)"
 	[ -n "$dev" ] || { echo "no connected iPhone" >&2; exit 1; }
-	# 签名走 Xcode 里已登录的团队账号(Team XXXXXXXXXX)。App Store Connect API key 在
+	# 签名走 Xcode 里已登录的团队账号。App Store Connect API key 在
 	# 这一步被 provisioning 服务拒过(2026-09-29,「Authentication failed: bearer token」),
 	# 而同一把 key 的公证在 CI 上一直正常 —— 两个服务认证不同,别把它加回来当默认路径。
+	# 团队 ID 不进仓库:取自本机私有的 ~/.private_keys/app-store-connect.env(APPLE_TEAM_ID),
+	# 或显式给 BX_IOS_TEAM。
+	team="${BX_IOS_TEAM:-}"
+	if [ -z "$team" ] && [ -f "$HOME/.private_keys/app-store-connect.env" ]; then
+		team="$(. "$HOME/.private_keys/app-store-connect.env" && echo "${APPLE_TEAM_ID:-}")"
+	fi
+	[ -n "$team" ] || { echo "no Apple team ID: set BX_IOS_TEAM or APPLE_TEAM_ID in ~/.private_keys/app-store-connect.env" >&2; exit 1; }
 	xcodebuild -project apps/ios/BxiOS.xcodeproj -scheme BxApp -configuration Debug \
 		-destination "id=$dev" -derivedDataPath apps/ios/build \
-		-allowProvisioningUpdates build -quiet
+		DEVELOPMENT_TEAM="$team" -allowProvisioningUpdates build -quiet
 	xcrun devicectl device install app --device "$dev" apps/ios/build/Build/Products/Debug-iphoneos/bx.app
 	;;
 snapshot)

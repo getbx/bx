@@ -1720,7 +1720,7 @@ EOF
 否掉「Direct rules: N unreachable」常驻红字同一条判断)。危险直连是**安全结论**,
 而这个功能的起因正是「他可能永远不会敲 doctor」。
 
-**为什么用 `severity=warn`:** `11338a0` 之后只有 `severity=error` 才把总状态降级。
+**为什么用 `severity=warn`:** `6b660ed` 之后只有 `severity=error` 才把总状态降级。
 一条配置建议不该让一台工作正常的机器显示 `Needs Attention` —— 那正是 Tailscale
 共存 advisory 当初犯的错。
 
@@ -1810,7 +1810,7 @@ import (
 // 面板会变墙纸、把真正要紧的这一条一起淹掉(与项目所有者否掉「Direct rules: N
 // unreachable」常驻红字同一条判断)。它们留在 bx doctor 里,那是诊断命令。
 //
-// severity 取 warn:11338a0 之后只有 error 会把总状态降级成 Needs Attention,
+// severity 取 warn:6b660ed 之后只有 error 会把总状态降级成 Needs Attention,
 // 而一条配置建议不该让一台工作正常的机器显示需注意。
 //
 // 与 mode 无关:公有云开放子域的去匿名化风险不因 global/split 而变。
@@ -1941,7 +1941,7 @@ feat(supervisor): bx status 常驻说出危险直连规则(只说这一类)
 墙纸、把真正要紧的这一条一起淹掉(与否掉「Direct rules: N unreachable」常驻红字
 同一条判断)。它们留在 doctor 里,那是诊断命令。
 
-severity 取 warn 不是 error:11338a0 之后只有 error 会把总状态降级成 Needs
+severity 取 warn 不是 error:6b660ed 之后只有 error 会把总状态降级成 Needs
 Attention,而一条配置建议不该让一台工作正常的机器显示需注意 —— 那正是 Tailscale
 共存 advisory 当初犯的错。
 

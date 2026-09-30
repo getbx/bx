@@ -197,7 +197,7 @@ func TestHarnessManagerDownStopsCoreForReal(t *testing.T) {
 
 // 准入控制:系统里已经有一个 Core 在跑时,Up 必须拒绝而不是再起一个。
 //
-// 这是 af81632 那个双 Core 风险的 linux 首验 —— 两个 Core 争路由、先退出的
+// 这是 3f4f5d2 那个双 Core 风险的 linux 首验 —— 两个 Core 争路由、先退出的
 // 那个用旧快照还原掀掉另一个的劫持,status 显绿而流量明文直连。
 func TestHarnessManagerRefusesSecondCore(t *testing.T) {
 	enterGuardianNetns(t)

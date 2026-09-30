@@ -88,7 +88,7 @@ var executableReconcileActions = map[reconcileAction]bool{
 	// ③c start_core 的三个稳定码。导出:internal/cli 渲染用同一份名字,
 	// 不许两边各抄一份字符串(与 internal/udpsource 那条纪律同源)。
 	//   - core_process_present:扫到 ≥1 个 Core 进程,socket 却不应答 —— 卡住但
-	//     活着,起第二个正是 af81632 双 Core 的入口,本期只显形不处置;
+	//     活着,起第二个正是 3f4f5d2 双 Core 的入口,本期只显形不处置;
 	//   - core_scan_failed:没测成。「问不出来」不是「没有」;
 	//   - start_core_exhausted:本段故障已试满 maxReconcileStartCoreAttempts 次。
 	ReconcileSkipCoreProcessPresent  = "core_process_present"
@@ -188,7 +188,7 @@ func TestStartCoreRefusesWhenACoreProcessIsPresent(t *testing.T) {
 		t.Fatalf("Executed = %+v, want skipped/core_process_present", got)
 	}
 	if env.runner.startCount() != 0 {
-		t.Fatal("有 Core 进程在跑还起了第二个 —— af81632 双 Core 的入口")
+		t.Fatal("有 Core 进程在跑还起了第二个 —— 3f4f5d2 双 Core 的入口")
 	}
 }
 
@@ -705,7 +705,7 @@ git commit -m "feat(cli): bx status 渲染 ③c 的三个 start_core 码,exhaust
 `sudo bx up`。现在白名单三项(`restore_dns`/`clear_orphan_barrier`/`start_core`,
 `TestExecutableWhitelistIsExactlyOffCleanupPlusStartCore` 钉死)。**准入是槽内现扫
 `ScanRunning`,不是 socket**(`decideStartCoreAdmission` 三态:测成 0 个才起;≥1 个
-→ `core_process_present`,那是卡住但活着的 Core,起第二个正是 af81632 双 Core 的入口,
+→ `core_process_present`,那是卡住但活着的 Core,起第二个正是 3f4f5d2 双 Core 的入口,
 本期只显形;没测成 → `core_scan_failed`,「问不出来」不是「没有」)。起 Core 复用
 `startCoreLocked`(带屏障 handoff、等健康、成功释放屏障),与 `bx up` 同一条路,
 `runner.Start` 既有的 fail-closed 准入一道不拆。**每段故障封顶 5 次**

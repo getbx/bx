@@ -42,7 +42,7 @@ func downReportLines(result macOSDownResult) (stdout []string, stderr []string) 
 			// **不要让用户去跑一条看不到答案的命令。** 这里曾写「请执行 bx status 查看原因」,
 			// 而 bx status 根本不显示 last_error —— 那是把人支进死胡同。具体 PID 只在
 			// Guardian 日志里(刻意不进 Status:扫到的进程是「疑似」,把第三方 PID 放进
-			// Status 是 7778b53 专门修掉的错)。
+			// Status 是 875c2de 专门修掉的错)。
 			"To see which process: sudo tail -50 /var/log/bx-guard.err.log. Once you are satisfied, "+elevate.Prefix+"bx uninstall clears everything out.",
 		)
 		return stdout, stderr

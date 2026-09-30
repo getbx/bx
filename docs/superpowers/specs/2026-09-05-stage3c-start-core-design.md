@@ -28,7 +28,7 @@ Uncertain 锁存、要有限次数。三样在本期各有处置,见下。
 | 扫描结果 | 处置 | 发布的码 |
 |---|---|---|
 | 测成,0 个 | 起 | —(成功 `ok` / 失败 `execute_failed`) |
-| 测成,≥1 个 | **不起**。那是卡住但活着的 Core,起第二个正是 af81632 双 Core 的入口 | `core_process_present` |
+| 测成,≥1 个 | **不起**。那是卡住但活着的 Core,起第二个正是 3f4f5d2 双 Core 的入口 | `core_process_present` |
 | 没测成 | **不起**。「问不出来」不是「没有」 | `core_scan_failed` |
 
 这只是第一道门。起 Core 走 `startCoreLocked`,它里面 `runner.Start` 既有的 fail-closed

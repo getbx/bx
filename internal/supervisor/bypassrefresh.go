@@ -185,7 +185,7 @@ type bypassWiringParams struct {
 	serverStatics map[string][]netip.Addr
 	// staticA 是发布给 DNS 的静态表,**已经**合并过用户 hosts 覆盖。
 	// 它与 serverStatics 刻意分开传:一个是「谁能穿过屏障」,一个是「谁有静态答案」,
-	// 从后者推前者正是 a8c670f 引入的那个洞。
+	// 从后者推前者正是 971b6d6 引入的那个洞。
 	staticA map[string][]netip.Addr
 	// extraCIDRs 是**活的**:tailscale 那组中继旁路在启动时抓不到就退回内置兜底表,
 	// 而后台会一直重试。冻结成一份切片正是原来的缺陷 —— 开机自启时网络往往还没好,

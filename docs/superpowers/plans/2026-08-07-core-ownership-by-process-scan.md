@@ -119,7 +119,7 @@ func TestParseProcArgsRejectsMalformed(t *testing.T) {
 // 判据的核心:认得出 Core,且**不靠具体路径**认。
 func TestLooksLikeCoreIgnoresExecutablePath(t *testing.T) {
 	// 更新之后旧版 Core 跑在另一个路径下。用「路径 == 当前 Core 路径」做判据
-	// 会漏认它,于是起第二个 Core —— 正是 af81632 被回退的那个风险。
+	// 会漏认它,于是起第二个 Core —— 正是 3f4f5d2 被回退的那个风险。
 	for _, executable := range []string{
 		"/Library/Application Support/bx/runtime/dev/bx",
 		"/Library/Application Support/bx/runtime/v0.2.7/bx",
@@ -227,7 +227,7 @@ func parseProcArgs(raw []byte) (string, []string, error) {
 // looksLikeCore 判定一个进程是不是 bx 的 Core。
 //
 // **刻意不依赖具体可执行路径。** 更新之后旧版 Core 跑在 runtime/<旧版本>/bx 下,
-// 用「路径 == 当前 Core 路径」做判据会漏认它,于是起第二个 Core——正是 af81632
+// 用「路径 == 当前 Core 路径」做判据会漏认它,于是起第二个 Core——正是 3f4f5d2
 // 被回退的那个双 Core 风险。
 //
 // 也刻意偏向过度匹配:多认一个的后果是拒绝启动(安全),漏认一个是灾难。用户手工
@@ -334,7 +334,7 @@ func TestExistingRefusesLaunchingMarkerWhenScanFails(t *testing.T) {
 }
 
 // Existing 放行只是第一跳:Start 紧接着看到同一个文件也必须放行,
-// 否则用户可见行为与修复前一模一样(60b76f3 的教训)。
+// 否则用户可见行为与修复前一模一样(b6d8916 的教训)。
 func TestStartProceedsPastLaunchingMarkerWhenNoCoreRunning(t *testing.T) {
 	started := newStartTestProcess(71)
 	t.Cleanup(started.release)
@@ -529,7 +529,7 @@ func (r *ExecCoreRunner) resolveOrphanLaunchMarker(record processRecord) error {
 ```go
 	if record.PID <= 0 {
 		// 与 Existing() 同一判据:Existing 放行而 Start 拒绝,等于没修
-		// (60b76f3 的教训:只修一跳是假绿)。
+		// (b6d8916 的教训:只修一跳是假绿)。
 		return r.resolveOrphanLaunchMarker(record)
 	}
 ```
@@ -616,10 +616,10 @@ git commit -m "fix(guardian): 孤儿 launching 标记改为向系统求证,不�
   `basename==bx && argv[1]=="run" && uid==0` 的进程。没有 ⇒ 孤儿,自愈;有 ⇒ 仍
   fail-closed 并**报出 PID**;扫描失败 ⇒ 保持 fail-closed(「问不出来」不等于「没有」)。
 - **判据刻意不依赖可执行路径**:更新后旧版 Core 跑在 `runtime/<旧版本>/bx`,
-  用路径匹配会漏认它并起第二个 Core——正是 `af81632` 被回退的那个风险换了个入口。
+  用路径匹配会漏认它并起第二个 Core——正是 `3f4f5d2` 被回退的那个风险换了个入口。
   过度匹配的后果是拒绝启动(安全),漏认是灾难。
 - 为什么这个判据成立:**fork 一返回子进程就已存在**,早于它执行我们的任何代码,
-  所以它在「fork 与写盘之间」那个窗口里仍然有效——而两段式标记(`e7e413c`)只能
+  所以它在「fork 与写盘之间」那个窗口里仍然有效——而两段式标记(`191528d`)只能
   缩小窗口,消灭不了它。
 - 与 `internal/observe` 同一条原则:**向系统现问事实,不信自己的记账**。
 - 平台:darwin 实现 + `!darwin` 桩(桩保持既有 fail-closed)。

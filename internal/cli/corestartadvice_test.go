@@ -383,7 +383,7 @@ func TestEveryOutcomeSaysWhereTheFullReasonIs(t *testing.T) {
 // 用户可见的那几行里不许出现 markdown 的 `**`。
 //
 // 终端与 NSAlert 都不渲染它,用户读到的是字面上的星号。三条曾经就这么发出去
-// 过(4fbf829 才清掉),而这个文件的注释里 `**` 满天飞 —— 下一个人从注释里
+// 过(9fdb852 才清掉),而这个文件的注释里 `**` 满天飞 —— 下一个人从注释里
 // 顺手抄一句进字符串是最自然的动作,而没有任何东西拦着。
 func TestNoRenderedAdviceCarriesMarkdown(t *testing.T) {
 	for _, facts := range []startFailureServers{

@@ -540,7 +540,7 @@ func TestDaemonRetriesRecoveryWhileServingDiagnostics(t *testing.T) {
 }
 
 // TestStartRecoveredDaemonRaisesFenceBeforeServing is the regression guard
-// for the fail-closed window fd1fd90 opened: BeginStartupRecovery (which
+// for the fail-closed window d2f190b opened: BeginStartupRecovery (which
 // raises Manager.recoveryBlocked and the path-recovery fence) must happen
 // SYNCHRONOUSLY, before the socket is handed to `start`, not from inside the
 // background recovery goroutine. Otherwise a client that wins the race to

@@ -37,7 +37,7 @@ import "github.com/getbx/bx/internal/observe"
 //     它是 Guardian 的 fail-closed 拒绝:扫描到一个可能是 Core 的进程、或者压根
 //     问不出来,于是拒绝再起一个 Core —— 它整个存在的意义就是说「不」。调谐器若
 //     把它当成一处「事实与意图不符」去消除,等于自动地去推翻一次刻意的拒绝,正是
-//     af81632 被回退时那个双 Core 风险的入口。它和 recoveryBlocked、正在进行的
+//     3f4f5d2 被回退时那个双 Core 风险的入口。它和 recoveryBlocked、正在进行的
 //     路径恢复一样:本轮什么都不做,并说清是被哪道栅栏挡住的。
 
 // reconcileAction 是一项**被提议**的动作的名字。③a 一项都不执行;③b 起
@@ -114,7 +114,7 @@ func decide(in reconcileInput) reconcileDecision {
 		// **CoreSocket==False 的语义是「socket 没应答」,不是「没有 Core 在跑」。**
 		// observer 在 FetchRuntime 的**任何**错误上都记 False —— 超时、权限、
 		// socket 目录有问题都算。于是一个卡住但活着的 Core 会让这里提议 start_core,
-		// 而那正是 af81632 被回退时的双 Core 入口。
+		// 而那正是 3f4f5d2 被回退时的双 Core 入口。
 		//
 		// 两个后果,写在这里免得将来误读:
 		//   - 阶段③a 的 soak 会**高估** start_core 的出现次数,那个计数不能被读成

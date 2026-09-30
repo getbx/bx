@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.26(`net/http` unix socket、`httptest`)、Swift 5.9 AppKit(SwiftPM + `scripts/test-macos-menu.sh` 单文件套件)、Go 读源码守卫(`internal/cli` 的 `swiftFunctionBody` / `swiftFunctionDefs` / `menuMainSwiftCode`)。
 
-**Spec:** `docs/superpowers/specs/2026-09-09-guardian-owns-diagnostics-and-config-design.md`(§1、§3、§4、§6、§7、§8 ③④)。前置:`docs/superpowers/plans/2026-09-09-guardian-logs-and-doctor-extraction.md` 已落地(`0ba8392..c9e42ca`)。
+**Spec:** `docs/superpowers/specs/2026-09-09-guardian-owns-diagnostics-and-config-design.md`(§1、§3、§4、§6、§7、§8 ③④)。前置:`docs/superpowers/plans/2026-09-09-guardian-logs-and-doctor-extraction.md` 已落地(`4d089c8..8853181`)。
 
 ## Global Constraints
 

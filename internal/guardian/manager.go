@@ -718,7 +718,7 @@ func (m *Manager) Migrate(ctx context.Context, request MigrationRequest) error {
 	}
 
 	// 与 upLocked 同一条规矩、同一个助手:Migrate 是 bx up 在一台还带 legacy Core
-	// 的机器上走的那条路,同样是用户显式说的 on。只改一处就是假绿(60b76f3 的教训)。
+	// 的机器上走的那条路,同样是用户显式说的 on。只改一处就是假绿(b6d8916 的教训)。
 	//
 	// 这里不需要 upOrigin:Migrate 只有用户发起这一个来源(启动恢复走 recoverLocked
 	// → upLocked,永远到不了这儿)。
