@@ -2,67 +2,20 @@ package tunnel
 
 import (
 	"encoding/json"
-	"fmt"
-	"net/url"
-	"strconv"
-	"strings"
+
+	"github.com/getbx/bx/internal/singboxout"
 )
 
-// vlessLink 是从 vless:// 分享链接里解出的 REALITY 参数(用于生成 sing-box 客户端配置)。
+// vlessLink 是 tunnel 这一侧的 REALITY 参数:内嵌 singboxout.Vless(解析与出站都在那边,
+// 判据只有一份),这里只多挂一个起子进程时要的 singboxConfig。
 type vlessLink struct {
-	UUID        string
-	Host        string
-	Port        int
-	PublicKey   string // reality public key (pbk)
-	ShortID     string // reality short id (sid)
-	SNI         string // 借用的真实站点域名 (sni)
-	Flow        string // 一般为 xtls-rprx-vision
-	Fingerprint string // uTLS 指纹 (fp);空时默认 chrome
+	singboxout.Vless
 }
 
-// parseVlessLink 解析 vless://uuid@host:port?security=reality&pbk=&sid=&sni=&flow=&fp= 形式的链接。
-// 只接受 security=reality;缺 uuid/host/pbk/sid/sni 视为非法。
+// parseVlessLink 是 singboxout.ParseVless 的薄壳。
 func parseVlessLink(s string) (vlessLink, error) {
-	var v vlessLink
-	if !strings.HasPrefix(s, "vless://") {
-		return v, fmt.Errorf("不是 vless:// 链接")
-	}
-	u, err := url.Parse(s)
-	if err != nil {
-		return v, fmt.Errorf("解析 vless 链接: %w", err)
-	}
-	v.UUID = u.User.Username()
-	if v.UUID == "" {
-		return v, fmt.Errorf("vless 链接缺 uuid")
-	}
-	v.Host = u.Hostname()
-	if v.Host == "" {
-		return v, fmt.Errorf("vless 链接缺 host")
-	}
-	port, err := strconv.Atoi(u.Port())
-	if err != nil || port <= 0 || port > 65535 {
-		return v, fmt.Errorf("vless 链接端口非法: %q", u.Port())
-	}
-	v.Port = port
-	q := u.Query()
-	if q.Get("security") != "reality" {
-		return v, fmt.Errorf("仅支持 security=reality, got %q", q.Get("security"))
-	}
-	v.PublicKey = q.Get("pbk")
-	v.ShortID = q.Get("sid")
-	v.SNI = q.Get("sni")
-	v.Flow = q.Get("flow")
-	v.Fingerprint = q.Get("fp")
-	if v.PublicKey == "" || v.ShortID == "" || v.SNI == "" {
-		return v, fmt.Errorf("reality 链接缺 pbk/sid/sni 之一")
-	}
-	if v.Flow == "" {
-		v.Flow = "xtls-rprx-vision"
-	}
-	if v.Fingerprint == "" {
-		v.Fingerprint = "chrome"
-	}
-	return v, nil
+	v, err := singboxout.ParseVless(s)
+	return vlessLink{Vless: v}, err
 }
 
 // singboxConfig 生成最小 sing-box 客户端配置:本地 socks 入站 + vless-reality 出站。
@@ -77,25 +30,7 @@ func (v vlessLink) singboxConfig(socksAddr, httpAddr string) ([]byte, error) {
 	cfg := map[string]any{
 		"log":       map[string]any{"level": "warn", "timestamp": false},
 		"inbounds":  inbounds,
-		"outbounds": []any{v.outbound("reality-out")},
+		"outbounds": []any{v.Outbound("reality-out")},
 	}
 	return json.MarshalIndent(cfg, "", "  ")
-}
-
-// outbound 是 vless-reality 出站本身。桌面(singboxConfig)与手机(SingboxOutbound)共用这一份。
-func (v vlessLink) outbound(tag string) map[string]any {
-	return map[string]any{
-		"type":        "vless",
-		"tag":         tag,
-		"server":      v.Host,
-		"server_port": v.Port,
-		"uuid":        v.UUID,
-		"flow":        v.Flow,
-		"tls": map[string]any{
-			"enabled":     true,
-			"server_name": v.SNI,
-			"utls":        map[string]any{"enabled": true, "fingerprint": v.Fingerprint},
-			"reality":     map[string]any{"enabled": true, "public_key": v.PublicKey, "short_id": v.ShortID},
-		},
-	}
 }

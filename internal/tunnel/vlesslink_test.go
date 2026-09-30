@@ -3,6 +3,8 @@ package tunnel
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/getbx/bx/internal/singboxout"
 )
 
 func TestParseVlessLink(t *testing.T) {
@@ -44,11 +46,11 @@ func TestParseVlessLinkErrors(t *testing.T) {
 }
 
 func TestSingboxConfig(t *testing.T) {
-	v := vlessLink{
+	v := vlessLink{Vless: singboxout.Vless{
 		UUID: "uid", Host: "203.0.113.10", Port: 443,
 		PublicKey: "PBK", ShortID: "SID", SNI: "www.microsoft.com",
 		Flow: "xtls-rprx-vision", Fingerprint: "chrome",
-	}
+	}}
 	b, err := v.singboxConfig("127.0.0.1:10800", "")
 	if err != nil {
 		t.Fatalf("config: %v", err)
@@ -79,7 +81,7 @@ func TestSingboxConfig(t *testing.T) {
 // A non-empty httpAddr adds a second `http` inbound (for tailscaled's HTTP_PROXY)
 // alongside the socks inbound — both feed the same reality outbound.
 func TestSingboxConfigHTTPInbound(t *testing.T) {
-	v := vlessLink{UUID: "uid", Host: "1.2.3.4", Port: 443, PublicKey: "P", ShortID: "S", SNI: "www.microsoft.com", Flow: "xtls-rprx-vision", Fingerprint: "chrome"}
+	v := vlessLink{Vless: singboxout.Vless{UUID: "uid", Host: "1.2.3.4", Port: 443, PublicKey: "P", ShortID: "S", SNI: "www.microsoft.com", Flow: "xtls-rprx-vision", Fingerprint: "chrome"}}
 	b, err := v.singboxConfig("127.0.0.1:10800", "127.0.0.1:7890")
 	if err != nil {
 		t.Fatalf("config: %v", err)
