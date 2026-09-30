@@ -14,6 +14,7 @@
 | `sudo bx server share <name> --host <host>` | 创建一个独立分享链接 |
 | `sudo bx server shares` | 查看已分享的链接 |
 | `sudo bx server shares --json` | 以 JSON 查看已分享的链接 |
+| `sudo bx server harden` | 不让持有链接的人经隧道连到这台服务器自己的本机服务、内网与云元数据地址(2026-09-29 之前装的服务器跑一次;之后新装的自带) |
 | `sudo bx server revoke <name>` | 撤销一个分享 |
 | `sudo bx server rotate --host <host>` | 轮换 server 密码并生成新的客户端链接 |
 | `sudo bx server logs` | 查看服务端日志 |

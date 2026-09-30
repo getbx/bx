@@ -429,6 +429,7 @@ func serverCommands() []*cli.Command {
 		{Name: "link", Usage: "generate a client bx:// link", Flags: serverLinkFlags(), Action: serverLinkAction},
 		{Name: "share", Usage: "share with one person", ArgsUsage: "<name>", Flags: serverShareFlags(), Action: serverShareAction},
 		{Name: "shares", Usage: "show the links you have shared", Flags: serverSharesFlags(), Action: serverSharesAction},
+		serverHardenCommand(),
 		{Name: "revoke", Usage: "revoke one share", ArgsUsage: "<name>", Flags: serverRevokeFlags(), Action: serverRevokeAction},
 		{Name: "rotate", Usage: "rotate the server password and generate a new link", Flags: serverRotateFlags(), Action: serverRotateAction},
 		{Name: "up", Usage: "install and start in one step (reality+hysteria2 by default, public IP auto-detected)", Flags: serverInstallFlags(), Action: serverUpAction},

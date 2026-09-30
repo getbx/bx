@@ -127,6 +127,7 @@ func marshalServer(inbounds []any) ([]byte, error) {
 		"log":       map[string]any{"level": "warn", "timestamp": false},
 		"inbounds":  inbounds,
 		"outbounds": []any{map[string]any{"type": "direct", "tag": "direct"}},
+		"route":     HardenedRoute(),
 	}, "", "  ")
 }
 
