@@ -328,6 +328,8 @@ Servers 窗口整套;Show Details / Logs 页渲染。
 - **装好只加进清单、不切换**(`deployLister` 里按构造没有切换);同一个地址已在清单里就换它的
   链接而不是加重复项;装好后从这台 Mac 测一次,连不上时点名服务商的安全组。
 - 这台 Mac 还没配过 bx:结果给「用这台服务器配置 bx」,链接直接交给 `beginSetup(prefilled:)`。
+  反方向也通:首次设置的粘贴框多一个「I Need a Server…」直接打开部署窗口
+  (`TestFirstRunSetupOffersToSetUpAServer`)—— 没有链接的新用户不再走到死路。
 - 第四个起进程的地方 `runDeployProcess`,已在 `TestMacMenuSpawnsOnlyFromTheActionPath` 登记。
 - **「Add to iPhone…」**:done 事件带回链接,结果页点一下才把它画成二维码(`deployQRImage`,纠错 M、
   整数倍放大),旁边说清「看得到它的人都能用你的服务器」;不存盘、不进剪贴板。iPhone 相机扫了

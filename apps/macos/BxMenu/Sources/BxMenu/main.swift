@@ -2893,7 +2893,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 一次真去执行 CLI 的探测,它接手了 `bx logs --help` 被删之后留下的那一档:
         // 文件在、却跑不起来。
         guard ensureCLIUsable() else { return }
-        guard let links = prefilled ?? promptForClientLink()?.0 else { return }
+        guard let links = prefilled ?? promptForClientLink(offerDeploy: true)?.0 else { return }
         let command = "'\(bxPath)' setup \(setupArguments(links, quote: shellSingleQuoted))"
         guard runPrivileged(command) else {
             showFailure(L("Setup failed"), L("bx was not configured."))
@@ -3542,13 +3542,21 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func promptForClientLink(
         title: String = L("Set Up bx"),
         hint: String = L("Paste your bx link, or the whole setup command your server printed."),
-        confirmTitle: String = L("Set Up")
+        confirmTitle: String = L("Set Up"),
+        offerDeploy: Bool = false
     ) -> (SetupLinks, String)? {
         let alert = NSAlert()
         alert.messageText = title
-        alert.informativeText = hint
+        alert.informativeText = offerDeploy
+            ? hint + "\n\n" + L("No link yet? If you have a server from a provider (an address, a login and a password), bx can set it up for you.")
+            : hint
         alert.addButton(withTitle: confirmTitle)
         alert.addButton(withTitle: L("Cancel"))
+        // 首次设置时给没有链接的人一条出路:部署窗口装好之后,会把链接直接交回首次设置
+        // (setUpBxWithDeployedServer),不用再粘贴。
+        if offerDeploy {
+            alert.addButton(withTitle: L("I Need a Server…"))
+        }
 
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 24))
         field.placeholderString = "bx://..."
@@ -3560,7 +3568,12 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.accessoryView = field
         NSApp.activate(ignoringOtherApps: true)
 
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let answer = alert.runModal()
+        if answer == .alertThirdButtonReturn {
+            openDeployWindow()
+            return nil
+        }
+        guard answer == .alertFirstButtonReturn else { return nil }
         let link = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !link.isEmpty else {
             showMessage(L("No link"), L("Paste a bx link to continue."))

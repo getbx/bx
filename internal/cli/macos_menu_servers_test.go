@@ -1545,3 +1545,27 @@ func TestMacMenuReplaceLinkNeverReconnectsOnItsOwn(t *testing.T) {
 		t.Errorf("顺序不对(门=%d 问=%d 重连=%d)—— 重连必须在用户按下那个按钮之后", gate, ask, call)
 	}
 }
+
+// **首次设置给没有链接的人一条出路**(2026-09-30):一个刚装好 Bx.app、还没有服务器的人,被要求
+// 粘贴一条他没有的 bx:// 链接 —— 那是死路。设置提示多一个「I Need a Server…」,打开部署窗口;
+// 装好之后部署窗口把链接直接交回首次设置(setUpBxWithDeployedServer),不用再粘贴。
+// 替换服务器链接那条路**不**给这个按钮(那时用户手里已经有服务器了)。
+func TestFirstRunSetupOffersToSetUpAServer(t *testing.T) {
+	main := menuMainSwiftSource(t)
+	setup, ok := swiftFunctionBody(main, "private func beginSetup(")
+	if !ok {
+		t.Fatal("读不出 beginSetup 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	if !strings.Contains(setup, "promptForClientLink(offerDeploy: true)") {
+		t.Error("首次设置没有给「I Need a Server…」—— 没有链接的人走到死路")
+	}
+	prompt, ok := swiftFunctionBody(main, "private func promptForClientLink(")
+	if !ok {
+		t.Fatal("读不出 promptForClientLink 的函数体 —— 守卫已经失效,先修守卫")
+	}
+	third := strings.Index(prompt, ".alertThirdButtonReturn")
+	open := strings.Index(prompt, "openDeployWindow()")
+	if third < 0 || open < third {
+		t.Error("第三个按钮没有打开部署窗口")
+	}
+}

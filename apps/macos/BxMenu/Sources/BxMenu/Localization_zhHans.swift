@@ -585,4 +585,6 @@ let zhHansTranslations: [String: String] = [
     "Add to iPhone…": "加到 iPhone…",
     "Scan with your iPhone's Camera": "用 iPhone 相机扫一扫",
     "Point the Camera at this code and tap the bx link that appears. The bx app on iPhone asks before adding the server. Anyone who can see this code can use your server — close it when you are done.": "把相机对准这个码,点出现的 bx 链接。iPhone 上的 bx 会先问你再添加服务器。看得到这个码的人都能用你的服务器 —— 用完就关掉。",
+    "I Need a Server…": "我还没有服务器…",
+    "No link yet? If you have a server from a provider (an address, a login and a password), bx can set it up for you.": "还没有链接?如果你在服务商那里买了服务器(有地址、登录名和密码),bx 可以替你把它装好。",
 ]
