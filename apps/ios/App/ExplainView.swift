@@ -29,9 +29,19 @@ struct ExplainView: View {
                     Section {
                         // Stable identifiers: VoiceOver and the UI tests (UITests/) address the rows
                         // by these, not by how SwiftUI happens to merge a label and its value.
-                        LabeledContent("Goes", value: answer.verdictTitle)
-                            .font(.headline)
-                            .accessibilityIdentifier("explain.goes")
+                        HStack(spacing: 6) {
+                            Text("Goes")
+                            Spacer(minLength: 12)
+                            Group {
+                                Image(systemName: answer.verdictSymbol)
+                                    .accessibilityHidden(true)
+                                Text(answer.verdictTitle)
+                            }
+                            .foregroundStyle(answer.verdict == "tunnel" ? Color.accentColor : .primary)
+                        }
+                        .font(.headline)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("explain.goes")
                         LabeledContent("Because", value: answer.because)
                             .accessibilityIdentifier("explain.because")
                         if let rule = answer.rule, !rule.isEmpty {
@@ -48,7 +58,8 @@ struct ExplainView: View {
                     }
                 }
             }
-            .navigationTitle("bx")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .principal) { BrandTitle() } }
         }
         .onAppear { if autoRun { run() } }
     }

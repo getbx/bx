@@ -60,4 +60,20 @@ final class HomeScreenUITests: XCTestCase {
         let text = row.label + " " + ((row.value as? String) ?? "")
         XCTAssertTrue(text.contains("From your Mac"), "rules row says \(text)")
     }
+
+    // The status word follows the real state, and the one button offers the opposite action.
+    func testTheStatusSaysWhetherThisPhoneIsProtected() {
+        let off = launch(["--fixture-server"])
+        let state = off.descendants(matching: .any)["home.state"]
+        XCTAssertTrue(state.waitForExistence(timeout: 10), "no status word")
+        XCTAssertEqual(state.label, "Not protected")
+        XCTAssertEqual(off.buttons["home.protection"].label, "Turn On Protection")
+
+        let on = launch(["--fixture-server", "--fixture-on"])
+        let onState = on.descendants(matching: .any)["home.state"]
+        XCTAssertTrue(onState.waitForExistence(timeout: 10))
+        let protected = NSPredicate(format: "label == %@", "Protected")
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation(for: protected, evaluatedWith: onState)], timeout: 5), .completed, "status says \(onState.label)")
+        XCTAssertEqual(on.buttons["home.protection"].label, "Turn Off")
+    }
 }

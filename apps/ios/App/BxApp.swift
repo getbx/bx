@@ -63,6 +63,9 @@ struct MainView: View {
         if fixture, args.contains("--fixture-synced") {
             controller.fixtureSynced(policy: #"{"version":1780000000,"updated_at":"2026-09-30T08:00:00Z","global":false,"direct":["*.apple.com"],"proxy":[]}"#)
         }
+        if fixture, args.contains("--fixture-on") {
+            Task { await controller.setProtection(true) }
+        }
         _tunnel = StateObject(wrappedValue: controller)
         _tab = State(initialValue: BxApp.value(after: "--target", in: args) == nil ? 0 : 1)
     }
@@ -73,7 +76,7 @@ struct MainView: View {
         let target = BxApp.value(after: "--target", in: args)
         TabView(selection: $tab) {
             HomeView(tunnel: tunnel)
-                .tabItem { Label("Protection", systemImage: "shield") }
+                .tabItem { Label("Protection", systemImage: "checkmark.shield") }
                 .tag(0)
             ExplainView(
                 inputs: try? loaded.get(),

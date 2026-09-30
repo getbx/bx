@@ -52,6 +52,18 @@
   的 ATS 例外只给这个保留名(那条流量只在隧道里走,内容本身也封过)。
 - 真机上走屏幕同一条路径的无头场景:`scripts/ios-dev.sh run app`(导入 → 开 → 探测 → 关 → 忘掉)。
 
+## 图标与盾(2026-09-30)
+
+- **图标从设计包合成,不是直接搬**:包里的 app 图标母版是 macOS 那种「方块里画一块圆角砖」,
+  iOS 自己裁圆角且拒收透明,直接用会变成砖套砖。`apps/ios/icon/gen-ios-icons.py <设计包目录>`
+  把透明的 mark 放到从同一块砖取样的满版底色上,出浅色 / 深色 / 着色三种外观;App 内的 mark
+  浅色用 on_light、深色用 on_dark(包的 README 禁止混用)。
+  `TestIOSAppIconHasEveryAppearanceAndNoAlpha` 钉住三种外观、1024、**PNG 头里没有 alpha**
+  (Go 的解码器把真彩色也解成 RGBA,按类型判会全报错)与工程真的指名了 AppIcon。
+- **「保护」页那面盾就是 Mac 菜单栏那面**:形态即状态(实心=保护中、空心=没开、虚线=连接中、
+  裂开=出问题),颜色只加强。坐标逐字抄自 `MenuIcon.swift`,`TestIOSShieldMatchesTheMacOSOutline`
+  钉住。**产品标(b+x)与状态(盾)分开**,与设计包 README 同一条。
+
 ## 界面的检查
 
 `scripts/ios-dev.sh snapshot` 出截图给人(和 agent)看;`scripts/ios-dev.sh uitest` 跑 `UITests/` 里的

@@ -9,28 +9,37 @@ struct HomeView: View {
             Form {
                 if tunnel.state == .noServer {
                     Section {
+                        VStack(spacing: 12) {
+                            Image("BrandMark")
+                                .resizable()
+                                .scaledToFit()
+                                .frame(height: 64)
+                                .accessibilityHidden(true)
+                            Text("Add your server")
+                                .font(.title2.weight(.semibold))
+                            Text("bx sends this iPhone's traffic through your own server, and China sites direct.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                    }
+                    .listRowBackground(Color.clear)
+                    Section {
                         AddServerForm(tunnel: tunnel, onDone: {})
-                    } header: {
-                        Text("Add your server")
                     } footer: {
                         Text("Paste the bx:// link your server gave you. It is stored in this iPhone's Keychain and never leaves the device.")
                     }
                 } else {
                     Section {
-                        Toggle(isOn: Binding(
-                            get: { tunnel.isOn },
-                            set: { on in Task { await tunnel.setProtection(on) } }
-                        )) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Protection").font(.headline)
-                                Text(statusText).font(.subheadline).foregroundStyle(.secondary)
-                            }
-                        }
-                        .accessibilityIdentifier("home.protection")
-                        .disabled(tunnel.state == .connecting)
+                        hero
                     } footer: {
                         Text("While protection is on, nothing leaves this iPhone outside the tunnel — even while it reconnects.")
+                            .frame(maxWidth: .infinity)
+                            .multilineTextAlignment(.center)
                     }
+                    .listRowBackground(Color.clear)
                     Section {
                         LabeledContent("Rules", value: rulesTitle)
                             .accessibilityIdentifier("home.rules")
@@ -42,14 +51,15 @@ struct HomeView: View {
                             .accessibilityIdentifier("home.server")
                         Button("Change Server…") { showingAdd = true }
                     }
-                    if let message = tunnel.lastError {
+                    if let message = tunnel.lastError, !isFailed {
                         Section {
                             Text(message).foregroundStyle(.orange)
                         }
                     }
                 }
             }
-            .navigationTitle("bx")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .principal) { BrandTitle() } }
             .sheet(isPresented: $showingAdd) {
                 NavigationStack {
                     Form {
@@ -60,9 +70,97 @@ struct HomeView: View {
                         }
                     }
                     .navigationTitle("Change Server")
+                    .navigationBarTitleDisplayMode(.inline)
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showingAdd = false } } }
                 }
             }
+        }
+    }
+
+    // The one thing this screen is for: am I protected, and the one control that changes it.
+    private var hero: some View {
+        VStack(spacing: 10) {
+            ShieldMark(form: shieldForm, tint: shieldTint)
+                .frame(width: 88, height: 88)
+                .padding(.bottom, 6)
+            Text(stateTitle)
+                .font(.title2.weight(.semibold))
+                .accessibilityIdentifier("home.state")
+            Text(stateDetail)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            protectionButton
+                .padding(.top, 10)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+    }
+
+    @ViewBuilder private var protectionButton: some View {
+        let button = Button {
+            Task { await tunnel.setProtection(!tunnel.isOn) }
+        } label: {
+            Text(buttonTitle).font(.headline).frame(maxWidth: .infinity)
+        }
+        .controlSize(.large)
+        .disabled(tunnel.state == .connecting)
+        .accessibilityIdentifier("home.protection")
+        // Turning on is the action this screen invites; turning off is available, not advertised.
+        if tunnel.isOn {
+            button.buttonStyle(.bordered)
+        } else {
+            button.buttonStyle(.borderedProminent)
+        }
+    }
+
+    private var isFailed: Bool {
+        if case .failed = tunnel.state { return true }
+        return false
+    }
+
+    private var shieldForm: ShieldForm {
+        switch tunnel.state {
+        case .on: return .filled
+        case .connecting: return .dashed
+        case .failed: return .cracked
+        case .off, .noServer: return .hollow
+        }
+    }
+
+    private var shieldTint: Color {
+        switch tunnel.state {
+        case .on, .connecting: return .accentColor
+        case .failed: return .orange
+        case .off, .noServer: return .secondary
+        }
+    }
+
+    private var stateTitle: String {
+        switch tunnel.state {
+        case .on: return "Protected"
+        case .connecting: return "Connecting…"
+        case .failed: return "Couldn't turn on"
+        case .off, .noServer: return "Not protected"
+        }
+    }
+
+    private var stateDetail: String {
+        switch tunnel.state {
+        case .on: return "Traffic goes through \(tunnel.serverHost ?? "your server")."
+        case .connecting: return "Nothing leaves this iPhone until the tunnel is up."
+        case let .failed(why): return why
+        case .off, .noServer: return "Apps connect directly, as if bx were not installed."
+        }
+    }
+
+    private var buttonTitle: String {
+        switch tunnel.state {
+        case .on: return "Turn Off"
+        case .connecting: return "Connecting…"
+        case .failed: return "Try Again"
+        case .off, .noServer: return "Turn On Protection"
         }
     }
 
@@ -88,16 +186,6 @@ struct HomeView: View {
             return "China direct, everything else through the tunnel. Your server cannot sync rules yet — on the server run: sudo bx server enable-sync"
         case .defaults(.differentLink):
             return "China direct, everything else through the tunnel. The rules on your server were synced with a different link, so they were ignored."
-        }
-    }
-
-    private var statusText: String {
-        switch tunnel.state {
-        case .noServer: return "No server"
-        case .off: return "Off"
-        case .connecting: return "Connecting…"
-        case .on: return "On — traffic goes through your server"
-        case let .failed(why): return why
         }
     }
 }

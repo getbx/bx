@@ -57,10 +57,11 @@ snapshot)
 	mkdir -p "$out"
 	for look in light dark; do
 		xcrun simctl ui "$sim" appearance "$look"
-		for home in "" --fixture-server; do
+		for home in "" --fixture-server "--fixture-server --fixture-on"; do
 			xcrun simctl launch --terminate-running-process "$sim" com.getbx.bx.ios --fixture $home >/dev/null
 			sleep 3
-			xcrun simctl io "$sim" screenshot "$out/home-${look}${home:+-server}.png" >/dev/null 2>&1
+			name="$(echo "$home" | sed 's/--fixture-//g; s/ /-/g')"
+			xcrun simctl io "$sim" screenshot "$out/home-${look}${name:+-$name}.png" >/dev/null 2>&1
 		done
 		for target in www.apple.com https://chat.example.net/c/1 2001:db8::1; do
 			xcrun simctl launch --terminate-running-process "$sim" com.getbx.bx.ios --fixture --target "$target" >/dev/null

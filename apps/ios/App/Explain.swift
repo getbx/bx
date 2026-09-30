@@ -19,6 +19,15 @@ struct ExplainAnswer: Decodable, Equatable {
         default: return verdict
         }
     }
+
+    var verdictSymbol: String {
+        switch verdict {
+        case "tunnel": return "lock.shield"
+        case "direct": return "arrow.up.right"
+        case "blocked": return "nosign"
+        default: return "questionmark"
+        }
+    }
 }
 
 struct ExplainInputs {
