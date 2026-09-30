@@ -18,6 +18,10 @@ var allowedInternalDeps = map[string]struct{}{
 	"github.com/getbx/bx/internal/explainwords": {},
 	"github.com/getbx/bx/internal/route":        {},
 	"github.com/getbx/bx/internal/routerbuild":  {},
+	"github.com/getbx/bx/internal/blink":        {},
+	"github.com/getbx/bx/internal/mobileconfig": {},
+	"github.com/getbx/bx/internal/singboxout":   {},
+	"github.com/getbx/bx/internal/singboxrules": {},
 }
 
 // 本包必须保持纯判据:不联网、不读文件、不跑命令。
