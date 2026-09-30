@@ -25,7 +25,7 @@ func TestIOSIdentifiersAgreeAcrossTheProject(t *testing.T) {
 		{"apps/ios/project.yml", "PRODUCT_BUNDLE_IDENTIFIER: " + tunnelID + "\n"},
 		{"apps/ios/App/Driver.swift", `tunnelBundleID = "` + tunnelID + `"`},
 		{"apps/ios/App/Driver.swift", `appGroup = "` + group + `"`},
-		{"apps/ios/Tunnel/PacketTunnelProvider.swift", `appGroup = "` + group + `"`},
+		{"apps/ios/Shared/SharedPaths.swift", `appGroup = "` + group + `"`},
 		{"apps/ios/App/App.entitlements", "<string>" + group + "</string>"},
 		{"apps/ios/Tunnel/Tunnel.entitlements", "<string>" + group + "</string>"},
 		{"apps/ios/App/App.entitlements", "<string>packet-tunnel-provider</string>"},
