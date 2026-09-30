@@ -105,14 +105,25 @@ func runHardenedServer(t *testing.T, bin []byte, storePort int) string {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+	// Wait for readiness, not for a guessed duration: under the full parallel test load sing-box
+	// once took longer than 5s to listen (2026-09-30). Stop early if it exits instead.
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-exited })
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {
+		select {
+		case err := <-exited:
+			exited <- err
+			t.Fatalf("sing-box exited before listening: %v", err)
+		default:
+		}
 		if c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond); err == nil {
 			_ = c.Close()
 			return addr
 		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatal("sing-box did not start")
+	t.Fatalf("sing-box did not listen within 30s")
 	return ""
 }
 
