@@ -10,11 +10,15 @@ struct BxApp: App {
 
     var body: some Scene {
         WindowGroup {
+            #if DEBUG
             if let scenario = Scenario.fromArguments(args) {
                 HeadlessView(scenario: scenario, args: args)
             } else {
                 MainView(args: args)
             }
+            #else
+            MainView(args: args)
+            #endif
         }
     }
 
@@ -24,6 +28,7 @@ struct BxApp: App {
     }
 }
 
+#if DEBUG
 struct HeadlessView: View {
     let scenario: Scenario
     let args: [String]
@@ -43,6 +48,7 @@ struct HeadlessView: View {
             }
     }
 }
+#endif
 
 // Two tabs: protection (what the phone does) and Explain (why a destination goes where it goes).
 // `--fixture` swaps in committed synthetic inputs and makes no VPN framework calls (simulator
@@ -81,6 +87,7 @@ struct MainView: View {
             default: controller.fixtureTailscale(TailscaleStatus())
             }
         }
+        if fixture, args.contains("--fixture-blocked") { controller.fixtureBlocked() }
         if fixture, args.contains("--fixture-on") {
             Task { await controller.setProtection(true) }
         }

@@ -1,3 +1,4 @@
+#if DEBUG // test driver only (Driver.swift)
 import Foundation
 
 // Two facts, both taken only while the tunnel is up (no "baseline without the tunnel": that
@@ -45,3 +46,4 @@ enum Probe {
         return Array(Set(out)).sorted()
     }
 }
+#endif

@@ -4,6 +4,7 @@ import Foundation
 // group container, and both must agree on every name in it.
 enum SharedPaths {
     static let appGroup = "group.com.getbx.bx"
+    static let tunnelBundleID = "com.getbx.bx.ios.tunnel"
     static let startConfigName = "start-config.json"
     static let brokenMarker = "BX-BROKEN-CONFIG"
 
@@ -104,6 +105,13 @@ enum SharedPaths {
 }
 
 struct SharedPathsError: LocalizedError {
+    let message: String
+    init(_ message: String) { self.message = message }
+    var errorDescription: String? { message }
+}
+
+/// An error whose words are already user-facing (or close enough for a developer).
+struct AppError: LocalizedError {
     let message: String
     init(_ message: String) { self.message = message }
     var errorDescription: String? { message }

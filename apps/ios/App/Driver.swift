@@ -1,3 +1,6 @@
+#if DEBUG
+// The headless test driver (scripts/ios-dev.sh run …). Debug builds only: it reads the bundled
+// Dev/ folder, which carries a real server link and is stripped from every other build.
 import Bxkit
 import Foundation
 import Network
@@ -64,8 +67,8 @@ struct Driver {
         }
     }
 
-    static let tunnelBundleID = "com.getbx.bx.ios.tunnel"
-    static let appGroup = "group.com.getbx.bx"
+    static let tunnelBundleID = SharedPaths.tunnelBundleID
+    static let appGroup = SharedPaths.appGroup
 
     static func emit(_ result: [String: Any]) {
         let data = (try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])) ?? Data()
@@ -124,7 +127,7 @@ struct Driver {
             case .app:
                 guard let dev = Bundle.main.url(forResource: "Dev", withExtension: nil),
                       let link = try? String(contentsOf: dev.appendingPathComponent("server-link.txt"), encoding: .utf8)
-                else { throw DriverError("no Dev/server-link.txt; run scripts/ios-dev.sh config first") }
+                else { throw AppError("no Dev/server-link.txt; run scripts/ios-dev.sh config first") }
                 let controller = await MainActor.run { TunnelController(fixture: false) }
                 try await MainActor.run { try controller.importLink(link) }
                 out["server_host"] = await controller.serverHost ?? ""
@@ -167,15 +170,16 @@ struct Driver {
             case .tailscale:
                 guard let dev = Bundle.main.url(forResource: "Dev", withExtension: nil),
                       let link = try? String(contentsOf: dev.appendingPathComponent("server-link.txt"), encoding: .utf8)
-                else { throw DriverError("no Dev/server-link.txt; run scripts/ios-dev.sh config first") }
+                else { throw AppError("no Dev/server-link.txt; run scripts/ios-dev.sh config first") }
                 var error: NSError?
                 let json = BxkitConfigureWithOptions(link.trimmingCharacters(in: .whitespacesAndNewlines), BxkitDefaultPolicy(),
                                                      #"{"tailscale":true}"#, BundledLists.chinaDomain, BundledLists.chinaCIDR, &error)
                 if let error { throw error }
                 let parsed = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] ?? [:]
-                let config = parsed["config"] as? String ?? ""
+                // The scenario reads Tailscale's log lines; the shipped config logs warnings only.
+                let config = (parsed["config"] as? String ?? "").replacingOccurrences(of: #""level":"warn""#, with: #""level":"info""#)
                 try SharedPaths.writeStartConfig(config, ruleSets: parsed["rule_sets"] as? [String: String] ?? [:])
-                guard let base = SharedPaths.container else { throw DriverError("no app group") }
+                guard let base = SharedPaths.container else { throw AppError("no app group") }
                 let loginURL = base.appendingPathComponent(SharedPaths.tailscaleLoginURLName)
                 let memoryURL = base.appendingPathComponent(SharedPaths.tunnelMemoryName)
                 try? FileManager.default.removeItem(at: loginURL)
@@ -272,10 +276,10 @@ struct Driver {
     // working directory, where the extension reads them.
     private func stageFiles(configName: String) throws -> String {
         guard let dev = Bundle.main.url(forResource: "Dev", withExtension: nil) else {
-            throw DriverError("no Dev folder in the app bundle; run scripts/ios-dev.sh config first")
+            throw AppError("no Dev folder in the app bundle; run scripts/ios-dev.sh config first")
         }
         guard let group = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroup) else {
-            throw DriverError("app group \(Self.appGroup) is not available")
+            throw AppError("app group \(Self.appGroup) is not available")
         }
         let working = group.appendingPathComponent("Working", isDirectory: true)
         try FileManager.default.createDirectory(at: working, withIntermediateDirectories: true)
@@ -293,7 +297,7 @@ struct Driver {
     private func stageStartConfig(broken: Bool) throws {
         let live = try stageFiles(configName: "libbox-config.json")
         guard let group = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroup) else {
-            throw DriverError("app group \(Self.appGroup) is not available")
+            throw AppError("app group \(Self.appGroup) is not available")
         }
         let body = broken ? "BX-BROKEN-CONFIG" : live
         try body.write(to: group.appendingPathComponent("Working/start-config.json"), atomically: true, encoding: .utf8)
@@ -395,9 +399,4 @@ struct Driver {
         }
     }
 }
-
-struct DriverError: LocalizedError {
-    let message: String
-    init(_ message: String) { self.message = message }
-    var errorDescription: String? { message }
-}
+#endif

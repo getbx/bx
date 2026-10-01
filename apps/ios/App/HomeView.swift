@@ -174,7 +174,6 @@ struct HomeView: View {
             Text(buttonTitle).font(.headline).frame(maxWidth: .infinity)
         }
         .controlSize(.large)
-        .disabled(tunnel.state == .connecting)
         .accessibilityIdentifier("home.protection")
         // Turning on is the action this screen invites; turning off is available, not advertised.
         if tunnel.isOn {
@@ -210,7 +209,7 @@ struct HomeView: View {
         switch tunnel.state {
         case .on: return String(localized: "Protected", bundle: .bx)
         case .connecting: return String(localized: "Connecting…", bundle: .bx)
-        case .failed: return String(localized: "Couldn't turn on", bundle: .bx)
+        case .failed: return String(localized: "Can't reach your server", bundle: .bx)
         case .off, .noServer: return String(localized: "Not protected", bundle: .bx)
         }
     }
@@ -229,8 +228,7 @@ struct HomeView: View {
     private var buttonTitle: String {
         switch tunnel.state {
         case .on: return String(localized: "Turn Off", bundle: .bx)
-        case .connecting: return String(localized: "Connecting…", bundle: .bx)
-        case .failed: return String(localized: "Try Again", bundle: .bx)
+        case .connecting, .failed: return String(localized: "Turn Off", bundle: .bx)
         case .off, .noServer: return String(localized: "Turn On Protection", bundle: .bx)
         }
     }

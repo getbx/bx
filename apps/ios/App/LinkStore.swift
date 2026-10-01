@@ -19,7 +19,7 @@ enum LinkStore {
         add[kSecValueData as String] = data
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let status = SecItemAdd(add as CFDictionary, nil)
-        guard status == errSecSuccess else { throw DriverError("Keychain save failed (\(status))") }
+        guard status == errSecSuccess else { throw AppError("Keychain save failed (\(status))") }
     }
 
     static func load() -> String? {

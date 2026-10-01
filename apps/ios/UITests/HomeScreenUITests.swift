@@ -262,4 +262,17 @@ final class HomeScreenUITests: XCTestCase {
         app.buttons["English"].tap()
         XCTAssertTrue(app.buttons["Turn On Protection"].waitForExistence(timeout: 5))
     }
+
+    // Kill-switch on, server unreachable: everything is blocked. The screen must say so (not "apps
+    // connect directly") and its one button must give the internet back.
+    func testABlockedPhoneSaysSoAndOffersTurnOff() {
+        let app = launch(["--fixture-server", "--fixture-blocked"])
+        XCTAssertTrue(app.staticTexts["Can't reach your server"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Apps connect directly, as if bx were not installed."].exists)
+        let button = app.buttons["home.protection"]
+        XCTAssertEqual(button.label, "Turn Off")
+        XCTAssertTrue(button.isEnabled)
+        button.tap()
+        XCTAssertTrue(app.staticTexts["Not protected"].waitForExistence(timeout: 5))
+    }
 }

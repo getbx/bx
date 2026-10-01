@@ -1,3 +1,4 @@
+#if DEBUG // test driver only (Driver.swift)
 import Foundation
 import Network
 
@@ -54,3 +55,4 @@ private final class ProbeState: @unchecked Sendable {
         ])
     }
 }
+#endif

@@ -28,7 +28,6 @@
 "Copy Command" = "复制命令";
 "Copy the link in your chat app, then tap Paste. bx shows the server's address and asks before adding it." = "在聊天软件里复制链接,再点「粘贴」。bx 会先显示服务器地址、问过你再添加。";
 "Could not reach the server" = "连不上服务器";
-"Couldn't turn on" = "没能打开";
 "Direct" = "直连";
 "Domain, IP or URL" = "域名、IP 或网址";
 "Done" = "完成";
@@ -168,3 +167,6 @@
 "Sign out of Tailscale?" = "退出 Tailscale?";
 "Follow System" = "跟随系统";
 "Language" = "语言";
+"Can't reach your server" = "连不上你的服务器";
+"Nothing leaves this iPhone while bx keeps trying. Turn protection off to use the internet without bx." = "bx 重试期间,这台 iPhone 的流量一律不出去。想先不经 bx 上网,就关闭保护。";
+"bx could not apply the change. Turn protection off and on again." = "bx 没能应用这次改动。请关闭保护再重新打开。";

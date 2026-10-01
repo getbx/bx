@@ -1,4 +1,4 @@
-# XcodeGen spec for the bx iOS dev build (phase 2: no UI, driven by scripts/ios-dev.sh).
+# XcodeGen spec for the bx iPhone app and its Packet Tunnel extension.
 # The generated .xcodeproj, the libbox framework and the Dev config are not committed.
 name: BxiOS
 options:
@@ -36,11 +36,19 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.getbx.bx.ios
         PRODUCT_NAME: bx
+        TARGETED_DEVICE_FAMILY: "1" # iPhone only (portrait-only on iPad would fail App Store upload)
         CODE_SIGN_ENTITLEMENTS: App/App.entitlements
         # App/Assets.xcassets: icon (light / dark / tinted) and the accent blue, both from the
         # design pack via apps/ios/icon/gen-ios-icons.py.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    # Dev/ carries the owner's real server link for the headless test driver (Debug only). Every other
+    # build must not ship it: TestIOSReleaseBuildsCarryNoDevFolder.
+    postBuildScripts:
+      - name: Strip Dev from non-Debug builds
+        script: |
+          if [ "$CONFIGURATION" != "Debug" ]; then rm -rf "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/Dev"; fi
+        basedOnDependencyAnalysis: false
     info:
       path: App/Info.plist
       properties:

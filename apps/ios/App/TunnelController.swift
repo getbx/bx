@@ -88,7 +88,13 @@ final class TunnelController: ObservableObject {
         }
     }
 
-    var isOn: Bool { state == .on || state == .connecting }
+    /// Protection is wanted: on, on its way, or held up (the kill-switch blocks while it retries).
+    var isOn: Bool {
+        switch state {
+        case .on, .connecting, .failed: return true
+        case .off, .noServer: return false
+        }
+    }
 
     /// Paste → configure → store. Refuses links the phone cannot run, saying which kinds work.
     /// Something opened bx with a link. Work out the address (no side effects) and ask.
@@ -130,7 +136,7 @@ final class TunnelController: ObservableObject {
         let json = BxkitConfigureWithOptions(link, policyJSON, optionsJSON, BundledLists.chinaDomain, BundledLists.chinaCIDR, &error)
         if let error {
             if error.localizedDescription.contains("no in-process sing-box outbound") {
-                throw DriverError(String(localized: "This server type is not supported on iPhone yet. bx on iPhone runs reality servers (vless:// links, or a bx:// link that contains one).", bundle: .bx))
+                throw AppError(String(localized: "This server type is not supported on iPhone yet. bx on iPhone runs reality servers (vless:// links, or a bx:// link that contains one).", bundle: .bx))
             }
             throw error
         }
@@ -194,7 +200,12 @@ final class TunnelController: ObservableObject {
         switch manager?.connection.status {
         case .connected: state = .on
         case .connecting, .reasserting: state = .connecting
-        case .disconnecting, .disconnected, .invalid, .none: state = .off
+        case .disconnecting, .disconnected, .invalid, .none, nil:
+            // Wanted on (on-demand with the kill-switch) but not up: iOS keeps retrying and blocks
+            // everything meanwhile. Saying "not protected — apps connect directly" here was false.
+            state = manager?.isOnDemandEnabled == true
+                ? .failed(String(localized: "Nothing leaves this iPhone while bx keeps trying. Turn protection off to use the internet without bx.", bundle: .bx))
+                : .off
         @unknown default: state = .off
         }
         // Pull when protection comes on, then every 30 minutes while it stays on. Only through the
@@ -236,7 +247,12 @@ final class TunnelController: ObservableObject {
             }
             guard let v = Self.version(of: policy) else { return }
             if case let .synced(current, _) = rules, v.version <= current { return }
-            try apply(policy: policy, link: link)
+            do {
+                try await apply(policy: policy, link: link)
+            } catch {
+                lastError = error.localizedDescription
+                return
+            }
             rules = .synced(version: v.version, updatedAt: v.updatedAt)
         } catch {
             // Transient failures keep whatever the phone already runs; only say so if it never synced.
@@ -244,18 +260,28 @@ final class TunnelController: ObservableObject {
         }
     }
 
-    private func apply(policy: String, link: String) throws {
+    private func apply(policy: String, link: String) async throws {
         var error: NSError?
         let json = BxkitConfigureWithOptions(link, policy, optionsJSON, BundledLists.chinaDomain, BundledLists.chinaCIDR, &error)
         if let error { throw error }
         struct Configured: Decodable { let config: String; let rule_sets: [String: String] }
         let c = try JSONDecoder().decode(Configured.self, from: Data(json.utf8))
         try SharedPaths.writeStartConfig(c.config, ruleSets: c.rule_sets)
+        if let problem = await reloadTunnel() { throw AppError(problem) }
         try SharedPaths.writeSyncedPolicy(policy)
         syncedPolicy = policy
-        if let session = manager?.connection as? NETunnelProviderSession {
-            try? session.sendProviderMessage(Data("reload".utf8)) { _ in }
+    }
+
+    /// Ask the running tunnel to pick up the rewritten config. nil = done (or nothing running).
+    /// A failed reload leaves the tunnel up with no service behind it — every connection blocked —
+    /// so the caller must say so instead of reporting success.
+    private func reloadTunnel() async -> String? {
+        guard state == .on, let session = manager?.connection as? NETunnelProviderSession else { return nil }
+        guard let reply = await send("reload", to: session) else {
+            return String(localized: "bx could not apply the change. Turn protection off and on again.", bundle: .bx)
         }
+        let text = String(decoding: reply, as: UTF8.self)
+        return text == "ok" ? nil : String(localized: "bx could not apply the change. Turn protection off and on again.", bundle: .bx)
     }
 
     private var optionsJSON: String { tailscaleEnabled ? #"{"tailscale":true}"# : "{}" }
@@ -270,11 +296,12 @@ final class TunnelController: ObservableObject {
         guard let link = LinkStore.load() else { return }
         var error: NSError?
         let json = BxkitConfigureWithOptions(link, policyJSON, optionsJSON, BundledLists.chinaDomain, BundledLists.chinaCIDR, &error)
-        guard error == nil, let c = try? JSONDecoder().decode(ConfiguredFiles.self, from: Data(json.utf8)) else { return }
-        try? SharedPaths.writeStartConfig(c.config, ruleSets: c.rule_sets)
-        if state == .on, let session = manager?.connection as? NETunnelProviderSession {
-            try? session.sendProviderMessage(Data("reload".utf8)) { _ in }
+        guard error == nil, let c = try? JSONDecoder().decode(ConfiguredFiles.self, from: Data(json.utf8)),
+              (try? SharedPaths.writeStartConfig(c.config, ruleSets: c.rule_sets)) != nil else {
+            lastError = String(localized: "bx could not apply the change. Turn protection off and on again.", bundle: .bx)
+            return
         }
+        lastError = await reloadTunnel()
     }
 
     private struct ConfiguredFiles: Decodable { let config: String; let rule_sets: [String: String] }
@@ -311,6 +338,11 @@ final class TunnelController: ObservableObject {
         }
     }
 
+    /// Fixture mode only: protection wanted but the tunnel cannot come up (the kill-switch blocks).
+    func fixtureBlocked() {
+        state = .failed(String(localized: "Nothing leaves this iPhone while bx keeps trying. Turn protection off to use the internet without bx.", bundle: .bx))
+    }
+
     /// Fixture mode only: a Tailscale state to render (UI tests and snapshots).
     func fixtureTailscale(_ status: TailscaleStatus) {
         tailscaleEnabled = true
@@ -337,7 +369,7 @@ final class TunnelController: ObservableObject {
 
     private func configureKillSwitch(_ m: NETunnelProviderManager, enabled: Bool) {
         let proto = (m.protocolConfiguration as? NETunnelProviderProtocol) ?? NETunnelProviderProtocol()
-        proto.providerBundleIdentifier = Driver.tunnelBundleID
+        proto.providerBundleIdentifier = SharedPaths.tunnelBundleID
         proto.serverAddress = serverHost ?? "bx"
         proto.includeAllNetworks = true
         proto.excludeLocalNetworks = true

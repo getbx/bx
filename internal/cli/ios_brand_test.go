@@ -285,3 +285,27 @@ func TestIOSLocalizedStringsUseTheChosenLanguage(t *testing.T) {
 		t.Fatalf("only %d String(localized:) calls found — the guard no longer matches the sources", seen)
 	}
 }
+
+// apps/ios/Dev holds the owner's real server link for the headless test driver. It is bundled as a
+// resource (Debug needs it), so every other configuration must strip it, and the code that reads
+// it must not exist outside Debug. Before 2026-10-01 every build carried the link.
+func TestIOSReleaseBuildsCarryNoDevFolder(t *testing.T) {
+	root := filepath.Join("..", "..", "apps", "ios")
+	spec, err := os.ReadFile(filepath.Join(root, "project.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(spec), `if [ "$CONFIGURATION" != "Debug" ]; then rm -rf "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/Dev"; fi`) {
+		t.Error("project.yml no longer strips Dev/ from non-Debug builds — a release would ship the real server link")
+	}
+	for _, name := range []string{"Driver.swift", "Probe.swift", "RawProbe.swift"} {
+		raw, err := os.ReadFile(filepath.Join(root, "App", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := strings.TrimSpace(string(raw))
+		if !strings.HasPrefix(src, "#if DEBUG") || !strings.HasSuffix(src, "#endif") {
+			t.Errorf("App/%s is not wholly inside #if DEBUG — test-driver code would ship", name)
+		}
+	}
+}

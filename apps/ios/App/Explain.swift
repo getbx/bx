@@ -39,7 +39,7 @@ struct ExplainInputs {
     // phone actually runs.
     static func load(fixture: Bool, policy: String = BxkitDefaultPolicy()) throws -> ExplainInputs {
         func read(_ url: URL?) throws -> String {
-            guard let url else { throw DriverError("missing explain input") }
+            guard let url else { throw AppError("missing explain input") }
             return try String(contentsOf: url, encoding: .utf8)
         }
         if fixture {

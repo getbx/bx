@@ -90,7 +90,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             throw TunnelError("command server: \(serverError?.localizedDescription ?? "nil")")
         }
         commandServer = server
-        startMemorySampler()
+        #if DEBUG
+        startMemorySampler() // scripts/ios-dev.sh reads it; a shipped tunnel must not wake every 5 s for it
+        #endif
         try server.start()
         do {
             try server.startOrReloadService(config, options: LibboxOverrideOptions())

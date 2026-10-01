@@ -115,7 +115,9 @@ func BuildWithOptions(cfg *config.Config, lists singboxrules.Lists, proxy map[st
 	}
 
 	doc := map[string]any{
-		"log": map[string]any{"level": "info"},
+		// warn, not info: at info sing-box logs every connection's destination, and the extension
+		// writes the log to disk — a browsing history nobody asked for.
+		"log": map[string]any{"level": "warn"},
 		"dns": map[string]any{
 			"servers": dnsServers,
 			"rules":   dnsRules,
