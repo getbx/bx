@@ -11,7 +11,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/getbx/bx/internal/update"
+	"github.com/getbx/bx/internal/releasemanifest"
 )
 
 // ReleaseDownloadBase is where release assets live: <base>/<tag>/<asset>.
@@ -297,7 +297,7 @@ func InstallCommand(opts Options) string {
 // ClientLinksFromInstallOutput 取出主链接与(如果有的)UDP 链接。
 //
 // **必须剥掉引号**:`bx server install` 打的是一条可直接复制的命令
-// (`sudo bx setup 'bx://AAA' --udp 'bx://BBB'`),链接是带单引号的。
+// (一整条可直接复制的 bx setup 命令,带 --udp 那一条),链接是带单引号的。
 // 真机第一次跑就是栽在这里 —— 我的 fixture 用的是裸链接。
 //
 // **两条都要**:远端同时给了 reality(TCP)与 hysteria2(UDP),漏掉第二条会让
@@ -340,7 +340,7 @@ func ShellQuote(value string) string {
 // 真机实测(2026-08-14):同一个 27.6MB 资产,VPS 直下 8.36 MB/s,本机经隧道
 // 17 KB/s —— 差 490 倍。让远端下是因为它就在目的地那一侧;校验和仍然来自本机,
 // 因为供应链的权威必须留在管理员手里(远端自己算自己的哈希毫无意义)。
-func FetchCommand(tag string, asset update.Asset) string {
+func FetchCommand(tag string, asset releasemanifest.Asset) string {
 	url := ReleaseDownloadBase + "/" + tag + "/" + asset.Name
 	upload, _ := UploadPaths()
 	tarball := upload + ".tar.gz"

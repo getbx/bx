@@ -323,7 +323,7 @@ Servers 窗口整套;Show Details / Logs 页渲染。
 - **bx 自己的 known_hosts**(`~/Library/Application Support/bx/known_hosts`),新服务器 accept-new、
   **变了的指纹照样拒绝**;窗口给「我重装过它」按钮(`--forget-host-key`)。**路径带空格,传给 ssh
   必须加双引号** —— 不加时指纹被写进 `~/Library/Application` 这个野文件(端到端撞到过)。
-- 进度逐行 JSON(step / done / error),失败按类出话(`classifyDeployFailure` ↔ `deployFailure`);
+- 进度逐行 JSON(step / done / error),失败按类出话(`deploy.Classify` ↔ `deployFailure`);
   「已装过」给「重装」、指纹变了给「我重装过它」,其余只说该改什么。
 - **装好只加进清单、不切换**(`deployLister` 里按构造没有切换);装好后从这台 Mac 测一次,连不上
   时点名服务商的安全组。**换掉清单里已有的那条,只在「用户敲的地址 == 链接里的地址」时**,否则加新

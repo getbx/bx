@@ -1,4 +1,4 @@
-package update
+package releasemanifest
 
 import (
 	"crypto/ed25519"

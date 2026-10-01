@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getbx/bx/internal/deploy"
+
 	"github.com/getbx/bx/internal/elevate"
 
 	"github.com/getbx/bx/internal/corestartfailure"
@@ -33,8 +35,8 @@ import (
 const (
 	repoReleasesLatest  = "https://github.com/getbx/bx/releases/latest"
 	repoReleaseDL       = "https://github.com/getbx/bx/releases/download" // /<tag>/<asset>
-	updateManifestName  = "bx-update.json"
-	updateSignatureName = "bx-update.json.sig"
+	updateManifestName  = deploy.ManifestName
+	updateSignatureName = deploy.SignatureName
 )
 
 type updateCheckReport struct {

@@ -73,12 +73,20 @@ struct MainView: View {
         _tab = State(initialValue: BxApp.value(after: "--target", in: args) == nil ? 0 : 1)
     }
 
+    // UI tests script the deploy (no network); everyone else gets the real one.
+    private var deployRunner: PhoneDeployRunner {
+        if args.contains("--fixture"), let outcome = BxApp.value(after: "--fixture-deploy", in: args) {
+            return ScriptedDeployRunner(outcome: outcome)
+        }
+        return GoDeployRunner()
+    }
+
     var body: some View {
         let fixture = args.contains("--fixture")
         let loaded = Result { try ExplainInputs.load(fixture: fixture, policy: tunnel.policyJSON) }
         let target = BxApp.value(after: "--target", in: args)
         TabView(selection: $tab) {
-            HomeView(tunnel: tunnel)
+            HomeView(tunnel: tunnel, deployRunner: deployRunner)
                 .tabItem { Label("Protection", systemImage: "checkmark.shield") }
                 .tag(0)
             ExplainView(

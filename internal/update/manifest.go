@@ -1,101 +1,17 @@
 package update
 
-import (
-	"bytes"
-	"crypto/ed25519"
-	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
-	"fmt"
-	"strings"
+import "github.com/getbx/bx/internal/releasemanifest"
+
+// The signed release manifest lives in internal/releasemanifest — a leaf with no os/exec, so the
+// iPhone's bxkit can verify releases too (the server's deploy fetches the manifest; the phone checks
+// the signature). These keep every existing caller compiling unchanged.
+type (
+	Manifest = releasemanifest.Manifest
+	Asset    = releasemanifest.Asset
 )
 
-type Manifest struct {
-	Version  string  `json:"version"`
-	Assets   []Asset `json:"assets"`
-	Packages []Asset `json:"packages,omitempty"`
-}
-
-type Asset struct {
-	Platform string `json:"platform"`
-	Name     string `json:"name"`
-	SHA256   string `json:"sha256"`
-	Size     int64  `json:"size"`
-}
-
-func ParseAndVerify(data, signature []byte, publicKeyBase64 string) (Manifest, error) {
-	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(publicKeyBase64))
-	if err != nil {
-		return Manifest{}, fmt.Errorf("decode update public key: %w", err)
-	}
-	if len(key) != ed25519.PublicKeySize {
-		return Manifest{}, fmt.Errorf("invalid update public key length")
-	}
-	if !ed25519.Verify(ed25519.PublicKey(key), data, signature) {
-		return Manifest{}, fmt.Errorf("invalid update manifest signature")
-	}
-
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	var manifest Manifest
-	if err := decoder.Decode(&manifest); err != nil {
-		return Manifest{}, fmt.Errorf("decode update manifest: %w", err)
-	}
-	if decoder.More() {
-		return Manifest{}, fmt.Errorf("decode update manifest: trailing JSON")
-	}
-	if strings.TrimSpace(manifest.Version) == "" {
-		return Manifest{}, fmt.Errorf("update manifest missing version")
-	}
-	if len(manifest.Assets) == 0 {
-		return Manifest{}, fmt.Errorf("update manifest has no assets")
-	}
-	if err := validateAssets(manifest.Assets); err != nil {
-		return Manifest{}, err
-	}
-	if err := validateAssets(manifest.Packages); err != nil {
-		return Manifest{}, err
-	}
-	return manifest, nil
-}
-
-func validateAssets(assets []Asset) error {
-	seen := make(map[string]struct{}, len(assets))
-	for _, asset := range assets {
-		if strings.TrimSpace(asset.Platform) == "" || strings.TrimSpace(asset.Name) == "" {
-			return fmt.Errorf("update manifest asset missing platform or name")
-		}
-		if _, ok := seen[asset.Platform]; ok {
-			return fmt.Errorf("update manifest has duplicate platform %q", asset.Platform)
-		}
-		seen[asset.Platform] = struct{}{}
-		if len(asset.SHA256) != 64 {
-			return fmt.Errorf("update manifest asset %q has invalid SHA256", asset.Name)
-		}
-		if _, err := hex.DecodeString(asset.SHA256); err != nil {
-			return fmt.Errorf("update manifest asset %q has invalid SHA256: %w", asset.Name, err)
-		}
-		if asset.Size <= 0 {
-			return fmt.Errorf("update manifest asset %q has invalid size", asset.Name)
-		}
-	}
-	return nil
-}
-
-func FindPackage(manifest Manifest, platform string) (Asset, error) {
-	for _, asset := range manifest.Packages {
-		if asset.Platform == platform {
-			return asset, nil
-		}
-	}
-	return Asset{}, fmt.Errorf("update manifest has no package for %q", platform)
-}
-
-func FindAsset(manifest Manifest, platform string) (Asset, error) {
-	for _, asset := range manifest.Assets {
-		if asset.Platform == platform {
-			return asset, nil
-		}
-	}
-	return Asset{}, fmt.Errorf("update manifest has no asset for %q", platform)
-}
+var (
+	ParseAndVerify = releasemanifest.ParseAndVerify
+	FindAsset      = releasemanifest.FindAsset
+	FindPackage    = releasemanifest.FindPackage
+)

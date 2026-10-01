@@ -2,7 +2,9 @@ import SwiftUI
 
 struct HomeView: View {
     @ObservedObject var tunnel: TunnelController
+    var deployRunner: PhoneDeployRunner = GoDeployRunner()
     @State private var showingAdd = false
+    @State private var showingDeploy = false
 
     var body: some View {
         NavigationStack {
@@ -27,9 +29,21 @@ struct HomeView: View {
                     }
                     .listRowBackground(Color.clear)
                     Section {
-                        AddServerForm(tunnel: tunnel, onDone: {})
+                        Button {
+                            showingDeploy = true
+                        } label: {
+                            Label("Set Up My Server", systemImage: "server.rack")
+                        }
+                        .accessibilityIdentifier("home.deploy")
                     } footer: {
-                        Text("Paste the bx:// link your server gave you. It is stored in this iPhone's Keychain and never leaves the device.")
+                        Text("Bought a server from a provider? Enter its address and password; bx installs everything.")
+                    }
+                    Section {
+                        AddServerForm(tunnel: tunnel, onDone: {})
+                    } header: {
+                        Text("Already have a link?")
+                    } footer: {
+                        Text("Paste the bx:// link your server gave you, or the whole line it printed. It is stored in this iPhone's Keychain and never leaves the device.")
                     }
                 } else {
                     Section {
@@ -64,6 +78,12 @@ struct HomeView: View {
                 IncomingLinkSheet(pending: pending, current: tunnel.serverHost,
                                   onAdd: { tunnel.acceptIncoming() },
                                   onCancel: { tunnel.incoming = nil })
+            }
+            .sheet(isPresented: $showingDeploy) {
+                NavigationStack {
+                    DeployScreen(tunnel: tunnel, runner: deployRunner, onDone: { showingDeploy = false })
+                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { showingDeploy = false } } }
+                }
             }
             .sheet(isPresented: $showingAdd) {
                 NavigationStack {
@@ -225,7 +245,7 @@ struct AddServerForm: View {
     private func add() {
         do {
             if tunnel.isOn { Task { await tunnel.setProtection(false) } }
-            try tunnel.importLink(link)
+            try tunnel.importLink(mainLinkFromPaste(link))
             problem = nil
             link = ""
             onDone()

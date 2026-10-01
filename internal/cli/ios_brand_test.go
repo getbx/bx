@@ -154,3 +154,35 @@ func TestIOSOpenedLinksAreConfirmedBeforeUse(t *testing.T) {
 		t.Fatal("没有注册 bx:// —— 相机扫了二维码打不开 App")
 	}
 }
+
+// 手机上的「Set Up My Server」:密码在 SecureField 里填,只交给这一次部署(BxdeployDeploy),
+// **不存** —— 不进钥匙串、不进设置、不写文件;交出去之前清空表单。与 Mac 部署窗口同一个承诺。
+func TestIOSDeployPasswordIsNeverStored(t *testing.T) {
+	read := func(name string) string {
+		b, err := os.ReadFile(filepath.Join("..", "..", "apps", "ios", "App", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	screen, flow := read("DeployScreen.swift"), read("DeployFlow.swift")
+	for name, src := range map[string]string{"DeployScreen.swift": screen, "DeployFlow.swift": flow} {
+		for _, leak := range []string{"LinkStore.save", "UserDefaults", "SecItem", "write(to", "AppStorage"} {
+			if strings.Contains(src, leak) {
+				t.Errorf("%s contains %q — the deploy password is used once and never stored", name, leak)
+			}
+		}
+	}
+	if !strings.Contains(screen, "SecureField(") {
+		t.Error("the password field is not a SecureField")
+	}
+	i := strings.Index(screen, "private func start(")
+	if i < 0 {
+		t.Fatal("cannot find start( — the guard's anchor drifted")
+	}
+	body := screen[i:]
+	clear, hand := strings.Index(body, `password = ""`), strings.Index(body, "runner.run(")
+	if clear < 0 || hand < 0 || clear > hand {
+		t.Errorf("the password is not cleared before it is handed over (clear=%d hand=%d)", clear, hand)
+	}
+}

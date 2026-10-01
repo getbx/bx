@@ -52,6 +52,21 @@
   的 ATS 例外只给这个保留名(那条流量只在隧道里走,内容本身也封过)。
 - 真机上走屏幕同一条路径的无头场景:`scripts/ios-dev.sh run app`(导入 → 开 → 探测 → 关 → 忘掉)。
 
+## 手机先装:在 App 里装好服务器(2026-09-30,真机未验)
+
+没有 Mac、第一个 bx 就是手机的人:首屏「Set Up My Server」填服务商给的地址 / SSH 端口 / 登录名 / 密码,
+App 装好(或沿用)服务器并直接把链接存进钥匙串。**判断与 Mac 部署窗口是同一份**(`internal/deploy`);
+手机的传输是 `mobile/bxdeploy`(Go 的 x/crypto/ssh;**不放进 bxkit** —— bxkit 是纯判据、不联网不读文件,
+两个包绑进同一个 framework)。
+- 手机未必够得着 GitHub:**服务器取签名清单,手机用内置公钥验签**,再让服务器下载并按验过的校验和核对
+  (`deploy.FetchViaServer`;签名不对按校验和不符处理,绝不换路再拿)。
+- 指纹:App 自己的 known_hosts,新服务器记下、变了拒绝,「I Reinstalled It」= 忘掉再连。
+- 已装好的服务器**沿用**(钥匙不动),端口被别的程序占着什么都不改;与 Mac 同一张失败分类。
+- 备用路:没有密码登录时给一条贴进服务商网页控制台的命令;它打印的 `sudo bx setup --udp … …` 整行
+  可以直接粘进 App(取主链接,不取 UDP 那条)。
+- 密码只交给这一次部署,不存、交出去前清空:`TestIOSDeployPasswordIsNeverStored`。端到端
+  `mobile/bxdeploy` 的 `TestDeployAgainstARealSSHServer`(要 `BX_E2E_SSH` 指向一个测试 sshd;不碰 Guardian)。
+
 ## 从外面打开的 bx:// 链接(2026-09-30)
 
 App 注册了 `bx://`:Mac 部署窗口的「Add to iPhone」二维码用相机一扫就打开 App。**任何网页都能打开

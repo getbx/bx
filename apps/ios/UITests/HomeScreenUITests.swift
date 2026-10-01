@@ -106,5 +106,62 @@ final class HomeScreenUITests: XCTestCase {
         let text = server.label + " " + ((server.value as? String) ?? "")
         XCTAssertTrue(text.contains("203.0.113.9"), "cancel changed the server: \(text)")
     }
+
+    // Phone-first: no link yet, only what the provider gave. The deploy is scripted (no network);
+    // the real one is Go's internal/deploy, end-to-end tested against a real sshd.
+    func testSettingUpAServerFromThePhoneSavesIt() {
+        let app = launch(["--fixture-deploy", "ok"])
+        let deploy = app.buttons["home.deploy"]
+        XCTAssertTrue(deploy.waitForExistence(timeout: 10), "no Set Up My Server on first run")
+        deploy.tap()
+        let address = app.textFields["deploy.address"]
+        XCTAssertTrue(address.waitForExistence(timeout: 5))
+        address.tap()
+        address.typeText("203.0.113.9")
+        let password = app.secureTextFields["deploy.password"]
+        password.tap()
+        password.typeText("pw")
+        app.buttons["deploy.start"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["deploy.result"].waitForExistence(timeout: 10), "no result")
+        app.buttons["deploy.done"].tap()
+        let server = app.descendants(matching: .any)["home.server"]
+        XCTAssertTrue(server.waitForExistence(timeout: 10))
+        let text = server.label + " " + ((server.value as? String) ?? "")
+        XCTAssertTrue(text.contains("203.0.113.9"), "server row says \(text)")
+    }
+
+    func testATakenPortIsExplained() {
+        let app = launch(["--fixture-deploy", "port"])
+        app.buttons["home.deploy"].tap()
+        let address = app.textFields["deploy.address"]
+        XCTAssertTrue(address.waitForExistence(timeout: 5))
+        address.tap()
+        address.typeText("203.0.113.9")
+        let password = app.secureTextFields["deploy.password"]
+        password.tap()
+        password.typeText("pw")
+        app.buttons["deploy.start"].tap()
+        let failure = app.descendants(matching: .any)["deploy.failure"]
+        XCTAssertTrue(failure.waitForExistence(timeout: 10), "no failure shown")
+        XCTAssertTrue(failure.label.contains("already used"), "failure says \(failure.label)")
+        XCTAssertFalse(app.descendants(matching: .any)["home.server"].exists, "a failed deploy saved a server")
+    }
+
+    // The web-console fallback prints `sudo bx setup --udp 'UDP' 'MAIN'`; pasting that whole line
+    // must take the main link, not the UDP one.
+    func testPastingTheWholeSetupLineTakesTheMainLink() {
+        let app = launch()
+        let field = app.descendants(matching: .any)["add.link"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        field.tap()
+        field.typeText("sudo bx setup --udp 'bx://UDP-ONLY' '\(Self.mainFixture)'")
+        app.buttons["add.submit"].tap()
+        let server = app.descendants(matching: .any)["home.server"]
+        XCTAssertTrue(server.waitForExistence(timeout: 10), "the pasted line was refused")
+        let text = server.label + " " + ((server.value as? String) ?? "")
+        XCTAssertTrue(text.contains("203.0.113.9"), "server row says \(text)")
+    }
+
+    static let mainFixture = "vless://11111111-2222-3333-4444-555555555555@203.0.113.9:443?security=reality&sni=www.cloudflare.com&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=abcd&fp=chrome&flow=xtls-rprx-vision"
 }
 

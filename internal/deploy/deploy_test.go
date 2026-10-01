@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/getbx/bx/internal/elevate"
-	"github.com/getbx/bx/internal/update"
+	"github.com/getbx/bx/internal/releasemanifest"
 )
 
 // **`uname -m` 认不出来时必须硬失败。**
@@ -198,7 +198,7 @@ func TestShellSingleQuoted(t *testing.T) {
 // 于是:签名清单在本机取(小、验签),大文件让远端自己下,**用本机拿到的
 // 校验和在远端核对**。远端下不动就回落到本机下载 + scp。
 func TestRemoteFetchPlanPrefersTheServerThenFallsBack(t *testing.T) {
-	asset := update.Asset{Platform: "linux/amd64", Name: "bx_linux_amd64.tar.gz", SHA256: "abc123"}
+	asset := releasemanifest.Asset{Platform: "linux/amd64", Name: "bx_linux_amd64.tar.gz", SHA256: "abc123"}
 
 	// 远端能下:走远端,而且**必须带上本机拿到的校验和**去核对。
 	cmd := FetchCommand("v0.2.7", asset)

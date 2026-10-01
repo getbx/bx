@@ -25,6 +25,7 @@ package bxkitbuild
 
 import (
 	_ "github.com/getbx/bx/mobile/bxkit"
+	_ "github.com/getbx/bx/mobile/bxdeploy"
 	_ "github.com/sagernet/gomobile/bind"
 )
 GO
@@ -33,5 +34,5 @@ gobin="$(go env GOPATH)/bin"
 rm -rf "$dest"
 mkdir -p apps/ios/Frameworks
 (cd "$work" && GOFLAGS=-mod=mod PATH="$gobin:$PATH" gomobile bind -target ios,iossimulator -iosversion 17.0 \
-	-o "$root/$dest" github.com/getbx/bx/mobile/bxkit)
+	-o "$root/$dest" github.com/getbx/bx/mobile/bxkit github.com/getbx/bx/mobile/bxdeploy)
 echo "built $dest"
