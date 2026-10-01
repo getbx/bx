@@ -36,6 +36,13 @@ enum SharedPaths {
 
     static let syncedPolicyName = "synced-policy.json"
 
+    /// Tailscale inside bx's tunnel: the extension leaves the sign-in link here for the app (the
+    /// app opens it; a link is single-use and expires, so it is overwritten, never kept), and a
+    /// memory sample — iOS kills a VPN extension that outgrows its small budget.
+    static let tailscaleLoginURLName = "tailscale-login-url"
+    static let tunnelMemoryName = "tunnel-memory.json"
+    static let tunnelStartErrorName = "tunnel-start-error"
+
     /// The Mac's rules as last synced (routing intent only; no link). Same protection as the config.
     static func writeSyncedPolicy(_ policy: String) throws {
         let url = try make().base.appendingPathComponent(syncedPolicyName)

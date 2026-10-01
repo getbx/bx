@@ -1,4 +1,6 @@
+import Bxkit
 import Foundation
+import Network
 import NetworkExtension
 
 enum Scenario: String {
@@ -8,6 +10,7 @@ enum Scenario: String {
     case armedbroken  // kill-switch on, tunnel cannot start: nothing may reach even our own server
     case explain      // headless explain: --target <x> [--fixture]
     case app          // the home screen's own path: paste link → protection on → probe → off → forget
+    case tailscale    // bx carries the tailnet: --ts-probe <url> (repeatable) [--ts-wait <s>]; prints BX-TS-LOGIN <url>
     case stop
     case remove       // delete the VPN configuration from Settings (run at the end of every session)
 
@@ -18,6 +21,49 @@ enum Scenario: String {
 }
 
 struct Driver {
+    static let quick: URLSession = {
+        let c = URLSessionConfiguration.ephemeral
+        c.timeoutIntervalForRequest = 4
+        return URLSession(configuration: c)
+    }()
+
+    static func value(after flag: String, in args: [String]) -> String? {
+        guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
+        return args[i + 1]
+    }
+
+    /// One HTTP/1.0 GET over a bare TCP connection; the response text, or nil.
+    static func rawGET(host: String, port: UInt16, seconds: Double) async -> String? {
+        await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
+            let conn = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+            let queue = DispatchQueue(label: "bx.rawget")
+            var done = false
+            var received = Data()
+            func finish(_ s: String?) {
+                guard !done else { return }
+                done = true
+                conn.cancel()
+                cont.resume(returning: s)
+            }
+            func read() {
+                conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, error in
+                    if let data { received.append(data) }
+                    if isComplete || error != nil { finish(String(decoding: received, as: UTF8.self)) } else { read() }
+                }
+            }
+            conn.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    conn.send(content: Data("GET / HTTP/1.0\r\nHost: \(host)\r\n\r\n".utf8), completion: .contentProcessed { _ in read() })
+                case .failed, .cancelled: finish(nil)
+                default: break
+                }
+            }
+            conn.start(queue: queue)
+            queue.asyncAfter(deadline: .now() + seconds) { finish(received.isEmpty ? nil : String(decoding: received, as: UTF8.self)) }
+        }
+    }
+
     static let tunnelBundleID = "com.getbx.bx.ios.tunnel"
     static let appGroup = "group.com.getbx.bx"
 
@@ -118,6 +164,75 @@ struct Driver {
                 out["state_after_off"] = "\(await controller.state)"
                 await controller.forgetServer()
                 out["forgot"] = true
+            case .tailscale:
+                guard let dev = Bundle.main.url(forResource: "Dev", withExtension: nil),
+                      let link = try? String(contentsOf: dev.appendingPathComponent("server-link.txt"), encoding: .utf8)
+                else { throw DriverError("no Dev/server-link.txt; run scripts/ios-dev.sh config first") }
+                var error: NSError?
+                let json = BxkitConfigureWithOptions(link.trimmingCharacters(in: .whitespacesAndNewlines), BxkitDefaultPolicy(),
+                                                     #"{"tailscale":true}"#, BundledLists.chinaDomain, BundledLists.chinaCIDR, &error)
+                if let error { throw error }
+                let parsed = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] ?? [:]
+                let config = parsed["config"] as? String ?? ""
+                try SharedPaths.writeStartConfig(config, ruleSets: parsed["rule_sets"] as? [String: String] ?? [:])
+                guard let base = SharedPaths.container else { throw DriverError("no app group") }
+                let loginURL = base.appendingPathComponent(SharedPaths.tailscaleLoginURLName)
+                let memoryURL = base.appendingPathComponent(SharedPaths.tunnelMemoryName)
+                try? FileManager.default.removeItem(at: loginURL)
+                try? FileManager.default.removeItem(at: memoryURL)
+
+                let manager = try await loadOrCreateManager()
+                try await stop(manager)
+                try manager.connection.startVPNTunnel(options: ["configContent": config as NSString])
+                let started = await waitFor(manager, .connected, seconds: 20)
+                out["tunnel_status"] = describe(started)
+                if started != .connected {
+                    // Why the extension stopped: its startTunnel error, as iOS kept it.
+                    do { try await manager.connection.fetchLastDisconnectError() } catch { out["start_error"] = "\(error)" }
+                    out["start_error_text"] = (try? String(contentsOf: base.appendingPathComponent(SharedPaths.tunnelStartErrorName), encoding: .utf8)) ?? ""
+                    out["box_log_tail"] = boxLogTail(lines: 15)
+                    return out // probing now would measure the phone without bx, not bx
+                }
+                try await Task.sleep(nanoseconds: 1_500_000_000)
+                out["probe"] = await Probe.run() // the internet through bx, with Tailscale alongside
+
+                // Reach the tailnet: the targets are on the user's own tailnet, given at run time.
+                var targets: [String] = []
+                for (i, a) in args.enumerated() where a == "--ts-probe" && i + 1 < args.count { targets.append(args[i + 1]) }
+                let wait = Double(Self.value(after: "--ts-wait", in: args) ?? "") ?? 240
+                var reached: [String: String] = [:]
+                var announced = false
+                let deadline = Date().addingTimeInterval(wait)
+                while Date() < deadline {
+                    if !announced, let url = try? String(contentsOf: loginURL, encoding: .utf8) {
+                        print("BX-TS-LOGIN \(url)")
+                        fflush(stdout)
+                        announced = true
+                    }
+                    for t in targets where reached[t] == nil {
+                        // Raw TCP, not URLSession: App Transport Security refuses plain http before
+                        // a single packet leaves, which reads exactly like "unreachable". The reply
+                        // must carry the page's own text — a tunnel can complete a handshake locally.
+                        if let u = URL(string: t), let host = u.host,
+                           let body = await Self.rawGET(host: host, port: UInt16(u.port ?? 80), seconds: 6),
+                           body.contains("bx tailnet ok") {
+                            reached[t] = "page answered"
+                        }
+                    }
+                    if !targets.isEmpty, reached.count == targets.count { break }
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                }
+                out["login_url_seen"] = announced
+                out["tailnet"] = Dictionary(uniqueKeysWithValues: targets.map { ($0, reached[$0] ?? "unreachable") })
+                out["probe_after"] = await Probe.run()
+                if let data = try? Data(contentsOf: memoryURL), let m = try? JSONSerialization.jsonObject(with: data) {
+                    out["memory"] = m
+                }
+                out["box_log_tail"] = boxLogTail(lines: 30)
+                let needles = ["tailscale", "magicdns", "ts.net"] + targets.compactMap { URL(string: $0)?.host }
+                out["box_log_tailnet"] = boxLogTail(lines: 3000).filter { line in needles.contains { line.lowercased().contains($0.lowercased()) } }.suffix(60).map { $0 }
+                try await stop(manager)
+                out["tunnel_status_after"] = describe(manager.connection.status)
             case .explain:
                 let target = BxApp.value(after: "--target", in: args) ?? ""
                 let answer = try ExplainInputs.load(fixture: args.contains("--fixture")).explain(target)

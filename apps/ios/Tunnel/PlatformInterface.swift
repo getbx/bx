@@ -191,7 +191,13 @@ final class PlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, Libbox
     func findConnectionOwner(_: Int32, sourceAddress _: String?, sourcePort _: Int32, destinationAddress _: String?, destinationPort _: Int32) throws -> LibboxConnectionOwner {
         throw unsupported("findConnectionOwner")
     }
-    func send(_: LibboxNotification?) throws {}
+    // libbox reports Tailscale's sign-in link as a notification; the app is where the user can
+    // open it, so it goes to the shared container.
+    func send(_ notification: LibboxNotification?) throws {
+        guard let notification, notification.identifier == "tailscale-authentication",
+              !notification.openURL.isEmpty, let base = SharedPaths.container else { return }
+        try Data(notification.openURL.utf8).write(to: base.appendingPathComponent(SharedPaths.tailscaleLoginURLName), options: .atomic)
+    }
     func cancelNotification(_: String?, typeID _: Int32) throws {}
     func startNeighborMonitor(_: LibboxNeighborUpdateListenerProtocol?) throws {}
     func closeNeighborMonitor(_: LibboxNeighborUpdateListenerProtocol?) throws {}

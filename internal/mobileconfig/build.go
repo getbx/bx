@@ -29,8 +29,25 @@ type Files struct {
 	RuleSets map[string][]byte
 }
 
+// TailscaleTag 是手机隧道里 Tailscale 端点的 tag。
+const TailscaleTag = "tailscale"
+
+// Options 是手机端独有、桌面配置里没有的开关。零值就是今天的配置,一个字节不变。
+type Options struct {
+	// Tailscale 让 bx 自己带上用户的 tailnet:iOS 同一时间只能开一个 VPN,开了 bx 就开不了
+	// Tailscale App。tailnet 宣告的一切(设备、子网路由器宣告的家里/公司网段、MagicDNS 名字)
+	// 排在所有路由之前交给 Tailscale —— 那些网段是私网,不排在前面就会按「私网直连」落到
+	// 手机眼下连着的 Wi-Fi 上。
+	Tailscale bool
+}
+
 // Build 拼出完整配置。proxy 是代理出站的主体,tag 一律改成 singboxrules.OutboundProxy。
 func Build(cfg *config.Config, lists singboxrules.Lists, proxy map[string]any) (Files, error) {
+	return BuildWithOptions(cfg, lists, proxy, Options{})
+}
+
+// BuildWithOptions 是带手机端开关的 Build。
+func BuildWithOptions(cfg *config.Config, lists singboxrules.Lists, proxy map[string]any, opts Options) (Files, error) {
 	if cfg == nil {
 		return Files{}, errors.New("nil config")
 	}
@@ -68,21 +85,41 @@ func Build(cfg *config.Config, lists singboxrules.Lists, proxy map[string]any) (
 	for _, r := range b.Route.Rules {
 		rules = append(rules, r)
 	}
+	dnsServers := []any{
+		map[string]any{"type": "fakeip", "tag": "fakeip", "inet4_range": fakeRange},
+		map[string]any{"type": "local", "tag": "local"},
+	}
+	// 与桌面同构:A 答假 IP,其余类型空答(NODATA,逼应用走 v4)。两条都只管 tun 来的
+	// 查询 —— 直连出站自己解析域名走 default_domain_resolver,不许拿到假 IP。
+	dnsRules := []any{
+		map[string]any{"inbound": []string{tunTag}, "query_type": []string{"A"}, "server": "fakeip"},
+		map[string]any{"inbound": []string{tunTag}, "query_type": []string{"A"}, "invert": true, "action": "predefined", "rcode": "NOERROR"},
+	}
+	var endpoints []any
+	if opts.Tailscale {
+		endpoints = []any{map[string]any{
+			"type": "tailscale", "tag": TailscaleTag,
+			"state_directory": "tailscale", // 相对 libbox 的工作目录(app group 里),登录状态存这儿
+			"hostname":        "bx-iphone",
+			"accept_routes":   true,
+		}}
+		dnsServers = append(dnsServers, map[string]any{
+			"type": "tailscale", "tag": "magicdns", "endpoint": TailscaleTag, "accept_search_domain": true,
+		})
+		// tailnet 的名字由 MagicDNS 答真地址(100.x / 子网里的地址),排在 fake-IP 之前;
+		// 连接于是按那个真地址被下面那条路由认领。
+		dnsRules = append([]any{map[string]any{"preferred_by": []string{"magicdns"}, "server": "magicdns"}}, dnsRules...)
+		// 紧跟在 sniff / DNS / v6 拒绝之后:tailnet 认领的目的地先于一切路由(含同步那条、私网直连)。
+		claim := map[string]any{"preferred_by": []string{TailscaleTag}, "action": "route", "outbound": TailscaleTag}
+		rules = append(rules[:3], append([]any{claim}, rules[3:]...)...)
+	}
 
 	doc := map[string]any{
 		"log": map[string]any{"level": "info"},
 		"dns": map[string]any{
-			"servers": []any{
-				map[string]any{"type": "fakeip", "tag": "fakeip", "inet4_range": fakeRange},
-				map[string]any{"type": "local", "tag": "local"},
-			},
-			// 与桌面同构:A 答假 IP,其余类型空答(NODATA,逼应用走 v4)。两条都只管 tun 来的
-			// 查询 —— 直连出站自己解析域名走 default_domain_resolver,不许拿到假 IP。
-			"rules": []any{
-				map[string]any{"inbound": []string{tunTag}, "query_type": []string{"A"}, "server": "fakeip"},
-				map[string]any{"inbound": []string{tunTag}, "query_type": []string{"A"}, "invert": true, "action": "predefined", "rcode": "NOERROR"},
-			},
-			"final": "local", // sing-box 1.14:fakeip 不能当 final
+			"servers": dnsServers,
+			"rules":   dnsRules,
+			"final":   "local", // sing-box 1.14:fakeip 不能当 final
 		},
 		"inbounds": []any{map[string]any{
 			"type":         "tun",
@@ -103,6 +140,9 @@ func Build(cfg *config.Config, lists singboxrules.Lists, proxy map[string]any) (
 			"final":                   b.Route.Final,
 			"default_domain_resolver": map[string]any{"server": "local", "strategy": "ipv4_only"},
 		},
+	}
+	if endpoints != nil {
+		doc["endpoints"] = endpoints
 	}
 	raw, err := json.Marshal(doc)
 	if err != nil {

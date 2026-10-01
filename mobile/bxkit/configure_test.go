@@ -133,3 +133,31 @@ func keys(m map[string]string) []string {
 	}
 	return out
 }
+
+// The app passes its phone-only switches as JSON; Tailscale on must reach the config, and an
+// unknown or malformed options document is an error rather than silently today's config.
+func TestConfigureWithOptionsCarriesTailscaleIntoTheConfig(t *testing.T) {
+	raw, err := bxkit.ConfigureWithOptions(fakeVless, bxkit.DefaultPolicy(), `{"tailscale":true}`, string(embedded.ChinaDomain()), string(embedded.ChinaCIDR()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c configured
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c.Config, `"type":"tailscale"`) {
+		t.Fatal("tailscale:true did not add the Tailscale endpoint")
+	}
+	plain, err := bxkit.ConfigureWithOptions(fakeVless, bxkit.DefaultPolicy(), `{}`, string(embedded.ChinaDomain()), string(embedded.ChinaCIDR()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plain, "tailscale") {
+		t.Fatal("empty options added Tailscale")
+	}
+	for _, bad := range []string{`{"tailscal":true}`, `not json`} {
+		if _, err := bxkit.ConfigureWithOptions(fakeVless, bxkit.DefaultPolicy(), bad, "", ""); err == nil {
+			t.Errorf("options %q accepted", bad)
+		}
+	}
+}

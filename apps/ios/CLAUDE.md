@@ -52,7 +52,23 @@
   的 ATS 例外只给这个保留名(那条流量只在隧道里走,内容本身也封过)。
 - 真机上走屏幕同一条路径的无头场景:`scripts/ios-dev.sh run app`(导入 → 开 → 探测 → 关 → 忘掉)。
 
-## 首屏:给什么都不知道的人(2026-10-01,真机未验)
+## Tailscale 装进 bx 的隧道(2026-10-01,真机实验通过,还没有界面)
+
+iOS 同一时间只能开一个 VPN,开了 Tailscale App 就开不了 bx。做法是 bx 自己带上 tailnet:
+`mobileconfig.Options.Tailscale` 给 libbox 加一个 tailscale 端点(`accept_routes`),路由第一条
+`preferred_by: tailscale` 认领 tailnet 宣告的一切(设备、子网路由器宣告的家里/公司网段、MagicDNS)
+—— **必须排在私网直连之前**,那些网段是私网。iOS 那份 Libbox 本来就带 `with_tailscale`。
+- **真机实测**(`scripts/ios-dev.sh run tailscale --ts-probe <url>`):登录链接经 libbox 通知到
+  app group(扩展的 `send`)→ 用户登录 → 手机按 tailnet IP 与 MagicDNS 名都拿到了 Mac 上的页面
+  (Mac 那侧的访问日志里来源是手机的 tailnet 地址),同时公网照常走 bx;扩展内存峰值约 21MB、
+  余量约 30MB;Mac↔手机同一 Wi-Fi 下是直连(28ms)。登录状态存在 libbox 工作目录的 `tailscale/`。
+- **两个坑**:① DNS 规则里的 `preferred_by` 写的是 **DNS 服务器的 tag**(`magicdns`),不是端点 ——
+  写成端点 `sing-box check` 照过,一启动就是 `DNS server not found`;② 探 tailnet 别用 URLSession
+  打 `http://`:ATS 在发包之前就拒了,读起来与「不通」一模一样。
+- 扩展把启动失败的原文写进 app group(`tunnel-start-error`)—— iOS 只给 app 一个 `(null)` 的 NSError。
+- **还没做**:App 里的开关、登录入口与状态、公司网段的子网路由器离线时怎么说。
+
+(2026-10-01,真机未验)
 
 所有者:「小白一开始都不知道怎么配置,填链接就非常难了,更别说分享还要粘贴。」首屏因此**不再是一个
 链接框**,而是「你想从哪里开始?」三条:**扫一扫**(App 内 VisionKit 扫 Mac「Add to iPhone」或朋友的码)、

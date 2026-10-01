@@ -33,6 +33,22 @@ func Configure(link, chinaDomain, chinaCIDR string) (string, error) {
 // ConfigureWithPolicy is Configure with a routing policy: the one synced from the user's Mac
 // (OpenSynced), or DefaultPolicy. A malformed policy is an error, never silently the defaults.
 func ConfigureWithPolicy(link, policyJSON, chinaDomain, chinaCIDR string) (string, error) {
+	return ConfigureWithOptions(link, policyJSON, "{}", chinaDomain, chinaCIDR)
+}
+
+// ConfigureWithOptions is ConfigureWithPolicy with the phone-only switches, as JSON:
+// {"tailscale": true} carries the user's tailnet inside bx's own tunnel (iOS runs one VPN at a
+// time). An unknown key or malformed document is an error: a typo must not quietly turn a
+// switch off.
+func ConfigureWithOptions(link, policyJSON, optionsJSON, chinaDomain, chinaCIDR string) (string, error) {
+	var opts struct {
+		Tailscale bool `json:"tailscale"`
+	}
+	dec := json.NewDecoder(strings.NewReader(optionsJSON))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&opts); err != nil {
+		return "", fmt.Errorf("options: %w", err)
+	}
 	var p policy
 	if err := json.Unmarshal([]byte(policyJSON), &p); err != nil {
 		return "", fmt.Errorf("policy: %w", err)
@@ -57,10 +73,10 @@ func ConfigureWithPolicy(link, policyJSON, chinaDomain, chinaCIDR string) (strin
 		return "", firstErr
 	}
 	cfg := &config.Config{Global: p.Global, Rules: []config.Rule{{Direct: p.Direct, Proxy: p.Proxy}}}
-	files, err := mobileconfig.Build(cfg, singboxrules.Lists{
+	files, err := mobileconfig.BuildWithOptions(cfg, singboxrules.Lists{
 		ChinaDomain: strings.Split(chinaDomain, "\n"),
 		ChinaCIDR:   strings.Split(chinaCIDR, "\n"),
-	}, proxy)
+	}, proxy, mobileconfig.Options{Tailscale: opts.Tailscale})
 	if err != nil {
 		return "", err
 	}
