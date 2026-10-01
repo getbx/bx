@@ -40,6 +40,11 @@ final class TunnelController: ObservableObject {
     /// The VPN-permission explainer was shown this run (so it is not shown twice in a row).
     @Published var vpnExplained = false
 
+    /// Tailscale inside bx's tunnel (iOS runs one VPN at a time). Off unless the person turns it on.
+    @Published private(set) var tailscaleEnabled = false
+    @Published private(set) var tailscaleStatus: TailscaleStatus?
+    var tailscalePhase: TailscalePhase { .from(enabled: tailscaleEnabled, protection: state, status: tailscaleStatus) }
+
     /// No VPN configuration yet ⇒ the next turn-on triggers iPhone's "add VPN configurations" alert.
     var needsVPNPermission: Bool { manager == nil && !vpnExplained }
 
@@ -68,6 +73,7 @@ final class TunnelController: ObservableObject {
         self.fixture = fixture
         defaults = fixture ? nil : UserDefaults(suiteName: SharedPaths.appGroup)
         serverHost = defaults?.string(forKey: "serverHost")
+        tailscaleEnabled = defaults?.bool(forKey: "tailscale") ?? false
         if !fixture, let saved = SharedPaths.readSyncedPolicy(), let v = Self.version(of: saved) {
             syncedPolicy = saved
             rules = .synced(version: v.version, updatedAt: v.updatedAt)
@@ -121,7 +127,7 @@ final class TunnelController: ObservableObject {
             if !fixture { SharedPaths.removeSyncedPolicy() }
         }
         var error: NSError?
-        let json = BxkitConfigureWithPolicy(link, policyJSON, BundledLists.chinaDomain, BundledLists.chinaCIDR, &error)
+        let json = BxkitConfigureWithOptions(link, policyJSON, optionsJSON, BundledLists.chinaDomain, BundledLists.chinaCIDR, &error)
         if let error {
             if error.localizedDescription.contains("no in-process sing-box outbound") {
                 throw DriverError(String(localized: "This server type is not supported on iPhone yet. bx on iPhone runs reality servers (vless:// links, or a bx:// link that contains one)."))
@@ -240,7 +246,7 @@ final class TunnelController: ObservableObject {
 
     private func apply(policy: String, link: String) throws {
         var error: NSError?
-        let json = BxkitConfigureWithPolicy(link, policy, BundledLists.chinaDomain, BundledLists.chinaCIDR, &error)
+        let json = BxkitConfigureWithOptions(link, policy, optionsJSON, BundledLists.chinaDomain, BundledLists.chinaCIDR, &error)
         if let error { throw error }
         struct Configured: Decodable { let config: String; let rule_sets: [String: String] }
         let c = try JSONDecoder().decode(Configured.self, from: Data(json.utf8))
@@ -250,6 +256,65 @@ final class TunnelController: ObservableObject {
         if let session = manager?.connection as? NETunnelProviderSession {
             try? session.sendProviderMessage(Data("reload".utf8)) { _ in }
         }
+    }
+
+    private var optionsJSON: String { tailscaleEnabled ? #"{"tailscale":true}"# : "{}" }
+
+    /// Turn Tailscale on or off: regenerate the config and, if protection is on, reload the tunnel
+    /// in place (the same path synced rules take). The sign-in itself is kept by the extension.
+    func setTailscale(_ on: Bool) async {
+        tailscaleEnabled = on
+        tailscaleStatus = nil
+        guard !fixture else { return }
+        defaults?.set(on, forKey: "tailscale")
+        guard let link = LinkStore.load() else { return }
+        var error: NSError?
+        let json = BxkitConfigureWithOptions(link, policyJSON, optionsJSON, BundledLists.chinaDomain, BundledLists.chinaCIDR, &error)
+        guard error == nil, let c = try? JSONDecoder().decode(ConfiguredFiles.self, from: Data(json.utf8)) else { return }
+        try? SharedPaths.writeStartConfig(c.config, ruleSets: c.rule_sets)
+        if state == .on, let session = manager?.connection as? NETunnelProviderSession {
+            try? session.sendProviderMessage(Data("reload".utf8)) { _ in }
+        }
+    }
+
+    private struct ConfiguredFiles: Decodable { let config: String; let rule_sets: [String: String] }
+
+    /// Ask the tunnel what Tailscale says, every two seconds while the caller is on screen.
+    func watchTailscale() async {
+        while !Task.isCancelled {
+            await refreshTailscale()
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+    }
+
+    func refreshTailscale() async {
+        guard !fixture, tailscaleEnabled, state == .on, let session = manager?.connection as? NETunnelProviderSession else { return }
+        let reply = await send("tailscale-status", to: session)
+        if let reply, let status = try? JSONDecoder().decode(TailscaleStatus.self, from: reply) {
+            tailscaleStatus = status
+        }
+    }
+
+    func signOutOfTailscale() async {
+        guard !fixture, let session = manager?.connection as? NETunnelProviderSession else { tailscaleStatus = nil; return }
+        _ = await send("tailscale-logout", to: session)
+        await refreshTailscale()
+    }
+
+    private func send(_ message: String, to session: NETunnelProviderSession) async -> Data? {
+        await withCheckedContinuation { cont in
+            do {
+                try session.sendProviderMessage(Data(message.utf8)) { cont.resume(returning: $0) }
+            } catch {
+                cont.resume(returning: nil)
+            }
+        }
+    }
+
+    /// Fixture mode only: a Tailscale state to render (UI tests and snapshots).
+    func fixtureTailscale(_ status: TailscaleStatus) {
+        tailscaleEnabled = true
+        tailscaleStatus = status
     }
 
     static func version(of policy: String) -> (version: Int64, updatedAt: String)? {

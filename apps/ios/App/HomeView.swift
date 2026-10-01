@@ -4,12 +4,14 @@ struct HomeView: View {
     @ObservedObject var tunnel: TunnelController
     var deployRunner: PhoneDeployRunner = GoDeployRunner()
     var scanSimulated: String?
+    var openTailscale = false // fixture only: start with the Tailscale screen open (snapshots)
     @State private var showingAdd = false
     @State private var showingDeploy = false
     @State private var showingScan = false
     @State private var showingGuide = false
     @State private var showingType = false
     @State private var showingVPNExplainer = false
+    @State private var showingTailscale = false
 
     var body: some View {
         NavigationStack {
@@ -39,6 +41,23 @@ struct HomeView: View {
                         LabeledContent("Address", value: tunnel.serverHost ?? "")
                             .accessibilityIdentifier("home.server")
                         Button("Change Server…") { showingAdd = true }
+                    }
+                    Section {
+                        Button { showingTailscale = true } label: {
+                            HStack {
+                                Text("Tailscale").foregroundStyle(.primary)
+                                Spacer()
+                                Text(tunnel.tailscalePhase.summary).foregroundStyle(.secondary)
+                                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                            }
+                        }
+                        .accessibilityIdentifier("home.tailscale")
+                    } header: {
+                        Text("Home and office devices")
+                    } footer: {
+                        if !tunnel.tailscaleEnabled {
+                            Text("Use Tailscale to reach your NAS or computers? iPhone runs one VPN at a time, so bx can connect Tailscale for you.")
+                        }
                     }
                     if let message = tunnel.lastError, !isFailed {
                         Section {
@@ -80,6 +99,14 @@ struct HomeView: View {
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showingType = false } } }
                 }
+            }
+            // Tailscale's state comes from the tunnel; ask while this screen (or the sheet over it) is up.
+            .task(id: "\(tunnel.state)-\(tunnel.tailscaleEnabled)") {
+                if tunnel.tailscaleEnabled, tunnel.state == .on { await tunnel.watchTailscale() }
+            }
+            .onAppear { if openTailscale { showingTailscale = true } }
+            .sheet(isPresented: $showingTailscale) {
+                NavigationStack { TailscaleScreen(tunnel: tunnel, onClose: { showingTailscale = false }) }
             }
             .sheet(isPresented: $showingVPNExplainer) {
                 VPNPermissionExplainer(onContinue: {

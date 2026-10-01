@@ -66,6 +66,19 @@ struct MainView: View {
         if fixture, let opened = BxApp.value(after: "--fixture-open", in: args) {
             controller.receive(link: opened)
         }
+        // `--fixture-tailscale signin|approval|running|starting`: a Tailscale state to render.
+        if fixture, let ts = BxApp.value(after: "--fixture-tailscale", in: args) {
+            switch ts {
+            case "signin": controller.fixtureTailscale(TailscaleStatus(backend_state: "NeedsLogin", auth_url: "https://login.tailscale.com/a/example"))
+            case "approval": controller.fixtureTailscale(TailscaleStatus(backend_state: "NeedsMachineAuth"))
+            case "running":
+                controller.fixtureTailscale(TailscaleStatus(backend_state: "Running", network_name: "example.ts.net", self_name: "bx-iphone",
+                                                            peers: [.init(name: "home-nas", online: true, os: "linux"),
+                                                                    .init(name: "office-router", online: false, os: "linux"),
+                                                                    .init(name: "macbook", online: true, os: "macOS")]))
+            default: controller.fixtureTailscale(TailscaleStatus())
+            }
+        }
         if fixture, args.contains("--fixture-on") {
             Task { await controller.setProtection(true) }
         }
@@ -87,7 +100,8 @@ struct MainView: View {
         let target = BxApp.value(after: "--target", in: args)
         TabView(selection: $tab) {
             HomeView(tunnel: tunnel, deployRunner: deployRunner,
-                     scanSimulated: args.contains("--fixture") ? BxApp.value(after: "--fixture-scan", in: args) : nil)
+                     scanSimulated: args.contains("--fixture") ? BxApp.value(after: "--fixture-scan", in: args) : nil,
+                     openTailscale: args.contains("--fixture") && args.contains("--fixture-open-tailscale"))
                 .tabItem { Label("Protection", systemImage: "checkmark.shield") }
                 .tag(0)
             ExplainView(

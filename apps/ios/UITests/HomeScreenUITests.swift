@@ -212,5 +212,41 @@ final class HomeScreenUITests: XCTestCase {
     }
 
     static let mainFixture = "vless://11111111-2222-3333-4444-555555555555@203.0.113.9:443?security=reality&sni=www.cloudflare.com&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=abcd&fp=chrome&flow=xtls-rprx-vision"
-}
 
+    // Tailscale inside bx: a row that says why it exists, and a screen whose every state says what to do.
+    func testTheTailscaleRowSaysWhyAndOpensItsScreen() {
+        let app = launch(["--fixture-server"])
+        let row = reveal(app, "home.tailscale")
+        XCTAssertTrue(row.label.contains("Off"), "row: \(row.label)")
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "one VPN at a time")).firstMatch.exists)
+        row.tap()
+        XCTAssertTrue(app.switches["tailscale.toggle"].waitForExistence(timeout: 5))
+    }
+
+    func testTailscaleWaitsForProtectionBeforeAnythingElse() {
+        let app = launch(["--fixture-server", "--fixture-tailscale", "running"])
+        reveal(app, "home.tailscale").tap()
+        XCTAssertTrue(app.staticTexts["Tailscale connects when protection is on."].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["home-nas"].exists, "devices shown while protection is off")
+    }
+
+    func testSignInNeededOffersTheSignInButton() {
+        let app = launch(["--fixture-server", "--fixture-on", "--fixture-tailscale", "signin"])
+        let row = reveal(app, "home.tailscale")
+        XCTAssertTrue(row.label.contains("Sign-in needed"), "row: \(row.label)")
+        row.tap()
+        let button = app.buttons["tailscale.signIn"]
+        XCTAssertTrue(button.waitForExistence(timeout: 5))
+        XCTAssertTrue(button.isEnabled)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "same account as the Tailscale app")).firstMatch.exists)
+    }
+
+    func testConnectedListsEachDeviceOnlineOrOffline() {
+        let app = launch(["--fixture-server", "--fixture-on", "--fixture-tailscale", "running"])
+        reveal(app, "home.tailscale").tap()
+        XCTAssertTrue(app.staticTexts["home-nas"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["office-router"].exists)
+        let offline = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Offline")).firstMatch
+        XCTAssertTrue(offline.exists, "an offline device must say so")
+    }
+}

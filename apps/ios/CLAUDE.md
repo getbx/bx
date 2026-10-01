@@ -52,7 +52,7 @@
   的 ATS 例外只给这个保留名(那条流量只在隧道里走,内容本身也封过)。
 - 真机上走屏幕同一条路径的无头场景:`scripts/ios-dev.sh run app`(导入 → 开 → 探测 → 关 → 忘掉)。
 
-## Tailscale 装进 bx 的隧道(2026-10-01,真机实验通过,还没有界面)
+## Tailscale 装进 bx 的隧道(2026-10-01,数据面真机实验通过,界面真机未验)
 
 iOS 同一时间只能开一个 VPN,开了 Tailscale App 就开不了 bx。做法是 bx 自己带上 tailnet:
 `mobileconfig.Options.Tailscale` 给 libbox 加一个 tailscale 端点(`accept_routes`),路由第一条
@@ -66,9 +66,16 @@ iOS 同一时间只能开一个 VPN,开了 Tailscale App 就开不了 bx。做�
   写成端点 `sing-box check` 照过,一启动就是 `DNS server not found`;② 探 tailnet 别用 URLSession
   打 `http://`:ATS 在发包之前就拒了,读起来与「不通」一模一样。
 - 扩展把启动失败的原文写进 app group(`tunnel-start-error`)—— iOS 只给 app 一个 `(null)` 的 NSError。
-- **还没做**:App 里的开关、登录入口与状态、公司网段的子网路由器离线时怎么说。
+- **界面**(`App/Tailscale.swift`,真机未验):「保护」页「家里和公司的设备」一行 → Tailscale 页。
+  状态**全部来自 Tailscale 自己**:扩展用 libbox 的命令客户端订阅状态(`Tunnel/TailscaleRelay.swift`),
+  App 经 `sendProviderMessage("tailscale-status")` 每两秒问一次 —— App 不链 libbox(为读一个状态
+  多几十 MB 不值)。`TailscalePhase` 把状态译成「下一步做什么」:等保护 / 连接中 / 登录(用与 Tailscale
+  App 相同的账号,会多出一台 bx-iphone)/ 等管理员批准 / 已连接(逐台设备在线离线 —— 「公司网段不通」
+  最常见的答案就是共享它的那台离线)/ 其它状态原话照说。常驻一句:Tailscale App 若设了自动连接,
+  要在那边关掉,否则它把 bx 挤掉。开关改动经与规则同步同一条 `reload` 原地生效,登录状态留在扩展里。
+- **已知缺口**:Explain 页不知道 tailnet,问 tailnet 里的地址会照 bx 的规则答(直连/隧道)。
 
-(2026-10-01,真机未验)
+## 首屏:给什么都不知道的人(2026-10-01,真机未验)
 
 所有者:「小白一开始都不知道怎么配置,填链接就非常难了,更别说分享还要粘贴。」首屏因此**不再是一个
 链接框**,而是「你想从哪里开始?」三条:**扫一扫**(App 内 VisionKit 扫 Mac「Add to iPhone」或朋友的码)、

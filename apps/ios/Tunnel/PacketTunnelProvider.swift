@@ -10,6 +10,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var commandServer: LibboxCommandServer?
     private lazy var platform = PlatformInterface(self)
     private var memoryTimer: DispatchSourceTimer?
+    private let tailscale = TailscaleRelay()
     private var peakFootprint: UInt64 = 0
 
     /// Every 5 s: this process's footprint (what iOS judges), its peak, and what is left.
@@ -96,11 +97,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         } catch {
             throw TunnelError("start service: \(error.localizedDescription)")
         }
+        tailscale.start()
     }
 
     override func stopTunnel(with _: NEProviderStopReason) async {
         memoryTimer?.cancel()
         memoryTimer = nil
+        tailscale.stop()
         try? commandServer?.closeService()
         platform.reset()
         commandServer?.close()
@@ -110,6 +113,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // The app rewrote start-config.json (rules synced from the Mac): reload the service in place,
     // without dropping the tunnel.
     override func handleAppMessage(_ messageData: Data) async -> Data? {
+        switch String(decoding: messageData, as: UTF8.self) {
+        case "tailscale-status": return tailscale.status()
+        case "tailscale-logout": return tailscale.logout()
+        default: break
+        }
         guard String(decoding: messageData, as: UTF8.self) == "reload", let server = commandServer else { return nil }
         do {
             let paths = try SharedPaths.make()

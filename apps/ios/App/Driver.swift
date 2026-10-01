@@ -223,6 +223,19 @@ struct Driver {
                     try await Task.sleep(nanoseconds: 2_000_000_000)
                 }
                 out["login_url_seen"] = announced
+                // What the app's Tailscale screen reads: the extension's relay of Tailscale's own status.
+                if let session = manager.connection as? NETunnelProviderSession {
+                    let reply: Data? = await withCheckedContinuation { cont in
+                        do { try session.sendProviderMessage(Data("tailscale-status".utf8)) { cont.resume(returning: $0) } } catch { cont.resume(returning: nil) }
+                    }
+                    if let reply, let st = try? JSONDecoder().decode(TailscaleStatus.self, from: reply) {
+                        out["relay"] = ["backend_state": st.backend_state ?? "", "self_name": st.self_name ?? "",
+                                        "peers": st.peers?.count ?? -1, "online": st.peers?.filter(\.online).count ?? -1,
+                                        "phase": "\(TailscalePhase.from(enabled: true, protection: .on, status: st))".prefix(40)]
+                    } else {
+                        out["relay"] = "no reply"
+                    }
+                }
                 out["tailnet"] = Dictionary(uniqueKeysWithValues: targets.map { ($0, reached[$0] ?? "unreachable") })
                 out["probe_after"] = await Probe.run()
                 if let data = try? Data(contentsOf: memoryURL), let m = try? JSONSerialization.jsonObject(with: data) {

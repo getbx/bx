@@ -196,7 +196,7 @@ func TestIOSDeployPasswordIsNeverStored(t *testing.T) {
 // 必须写成 String(localized: "…") 才会查表 —— 两种都在这里被扫到。
 func TestIOSEveryVisibleStringHasAChineseTranslation(t *testing.T) {
 	root := filepath.Join("..", "..", "apps", "ios")
-	call := regexp.MustCompile(`\b(?:Text|Button|Label|LabeledContent|navigationTitle|TextField|SecureField|ContentUnavailableView|DisclosureGroup|Toggle|Section|String\(localized:)\s*\(?\s*"((?:[^"\\]|\\.)*)"`)
+	call := regexp.MustCompile(`\b(?:Text|Button|Label|LabeledContent|navigationTitle|TextField|SecureField|ContentUnavailableView|DisclosureGroup|Toggle|Section|confirmationDialog|String\(localized:)\s*\(?\s*"((?:[^"\\]|\\.)*)"`)
 	choice := regexp.MustCompile(`choice\("[^"]+",\s*"((?:[^"\\]|\\.)*)",\s*\n?\s*"((?:[^"\\]|\\.)*)"`)
 	notUI := regexp.MustCompile(`^(bx://|vless://|[a-z]+\.[a-z.]+$|BrandMark$|203\.0\.113\.9$|22$|root$|Simulated scan$)`)
 	letters := regexp.MustCompile(`[A-Za-z]{2}`)
