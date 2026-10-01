@@ -127,17 +127,19 @@ func TestNonRootLoginFromTheWindowFeedsSudoThePassword(t *testing.T) {
 
 func TestDeployFailuresBecomePlainCategories(t *testing.T) {
 	for text, want := range map[string]string{
-		"ssh: connect to host 203.0.113.9 port 22: Operation timed out":                       "unreachable",
-		"ssh: connect to host 203.0.113.9 port 22: Connection refused":                        "unreachable",
-		"ssh: Could not resolve hostname nope.example: nodename nor servname":                 "unreachable",
-		"root@203.0.113.9: Permission denied (publickey,password).":                           "auth_failed",
-		"@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @\nHost key verification failed.": "host_key_changed",
-		"WARNING: Your password has expired.\nPassword change required but no TTY available.": "password_change_required",
-		"sudo: a password is required":                                                        "sudo_password",
-		"sudo: a terminal is required to read the password":                                   "sudo_password",
-		"the remote architecture was not recognized (uname -m says \"mips\")":                 "unsupported_system",
-		"the remote verification failed: bx: checksum mismatch":                               "checksum",
-		"the remote installation failed: exit status 1":                                       "install_failed",
+		"ssh: connect to host 203.0.113.9 port 22: Operation timed out":                                 "unreachable",
+		"ssh: connect to host 203.0.113.9 port 22: Connection refused":                                  "unreachable",
+		"ssh: Could not resolve hostname nope.example: nodename nor servname":                           "unreachable",
+		"root@203.0.113.9: Permission denied (publickey,password).":                                     "auth_failed",
+		"@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @\nHost key verification failed.":           "host_key_changed",
+		"WARNING: Your password has expired.\nPassword change required but no TTY available.":           "password_change_required",
+		"sudo: a password is required":                                                                  "sudo_password",
+		"sudo: a terminal is required to read the password":                                             "sudo_password",
+		"the remote architecture was not recognized (uname -m says \"mips\")":                           "unsupported_system",
+		"the remote verification failed: bx: checksum mismatch":                                         "checksum",
+		"the remote installation failed: exit status 1":                                                 "install_failed",
+		"port 443 on the server is already used by nginx; nothing was changed":                          "port_in_use",
+		"this server already has bx, but its configuration could not be read (reinstall to start over)": "already_installed",
 	} {
 		if got := classifyDeployFailure(text); got != want {
 			t.Errorf("%q → %q, want %q", text, got, want)
@@ -184,7 +186,7 @@ const deployTestLink = "vless://11111111-2222-3333-4444-555555555555@203.0.113.9
 
 func TestANewServerIsAddedUnderItsAddressAndTested(t *testing.T) {
 	f := &fakeLister{}
-	got, err := recordDeployedServer(context.Background(), f, "", deployTestLink, "")
+	got, err := recordDeployedServer(context.Background(), f, "", deployTestLink, "", "203.0.113.9")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +202,7 @@ func TestANewServerIsAddedUnderItsAddressAndTested(t *testing.T) {
 // a second entry with the same address would leave the old, dead keys in the list.
 func TestRedeployingTheSameMachineUpdatesItsEntry(t *testing.T) {
 	f := &fakeLister{list: guardian.ServerListResponse{Servers: []guardian.ServerEntry{{Name: "tokyo", Host: "203.0.113.9", Current: true}}}}
-	got, err := recordDeployedServer(context.Background(), f, "", deployTestLink, "")
+	got, err := recordDeployedServer(context.Background(), f, "", deployTestLink, "", "203.0.113.9")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +217,7 @@ func TestATakenNameGetsASuffixInsteadOfOverwritingAnotherServer(t *testing.T) {
 		list:      guardian.ServerListResponse{Servers: []guardian.ServerEntry{{Name: "home", Host: "198.51.100.7"}}},
 		addErrFor: map[string]error{"home": taken},
 	}
-	got, err := recordDeployedServer(context.Background(), f, "home", deployTestLink, "")
+	got, err := recordDeployedServer(context.Background(), f, "home", deployTestLink, "", "203.0.113.9")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +228,7 @@ func TestATakenNameGetsASuffixInsteadOfOverwritingAnotherServer(t *testing.T) {
 
 func TestWithoutBxSetUpTheLinkComesBackInsteadOfBeingLost(t *testing.T) {
 	f := &fakeLister{listErr: &guardian.UnavailableError{Err: errors.New("no socket")}}
-	if _, err := recordDeployedServer(context.Background(), f, "", deployTestLink, ""); !errors.Is(err, errDeployNotSetUp) {
+	if _, err := recordDeployedServer(context.Background(), f, "", deployTestLink, "", "203.0.113.9"); !errors.Is(err, errDeployNotSetUp) {
 		t.Fatalf("err = %v, want errDeployNotSetUp", err)
 	}
 }
@@ -301,5 +303,60 @@ func TestPathsWithSpacesAreQuotedForSSH(t *testing.T) {
 	}
 	if !hasOpt(o, `ControlPath="/tmp/with space/c"`) {
 		t.Fatalf("control path not quoted: %v", o)
+	}
+}
+
+// A server that already runs bx: the window must be told the keys were kept (links already shared
+// keep working), not that a new server was set up.
+func TestMenuDeployReportsAReusedServer(t *testing.T) {
+	var last deployEvent
+	err := runDeployForMenu(deployOptions{Host: "root@h", Protocol: "reality"}, deployDeps{
+		run: func(name string, args ...string) (string, error) {
+			joined := strings.Join(args, " ")
+			switch {
+			case strings.Contains(joined, "id -u"):
+				return "0\nx86_64\n", nil
+			case strings.Contains(joined, "/etc/bx/server.yaml"):
+				return "existing=reality\ntcp=sing-box\n", nil
+			case strings.Contains(joined, "server link"):
+				return "  sudo bx setup '" + blink.Encode(deployTestLink) + "'", nil
+			case strings.Contains(joined, "server install"):
+				t.Error("reinstalled a working server")
+			}
+			return "", nil
+		},
+		remoteFetch: func(string, func(string) (string, error)) error { return nil },
+		fetchBinary: func(string) (string, error) { return "/tmp/bx", nil },
+	}, &fakeLister{}, func(e deployEvent) { last = e })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last.Event != "done" || !last.Reused {
+		t.Fatalf("last event = %+v", last)
+	}
+}
+
+// 2026-09-30, caught on the owner's own Mac: a deploy to a test container (whose traffic leaves
+// through the owner's tunnel) printed a link carrying the *owner's VPS* address — the container's
+// detected public IP — and "same address ⇒ same machine" replaced the link of the server in use
+// with the container's keys. The address inside the link is whatever the server thinks its public
+// IP is (a tunnel, a NAT VPS, a proxy can make that another machine's). Only the address the
+// person typed is evidence of which machine this is: replace an entry only when they match;
+// otherwise add a new one, which can never break a working server.
+func TestAnEntryIsReplacedOnlyWhenTheTypedAddressMatches(t *testing.T) {
+	f := &fakeLister{list: guardian.ServerListResponse{Servers: []guardian.ServerEntry{{Name: "home", Host: "203.0.113.9", Current: true}}}}
+	got, err := recordDeployedServer(context.Background(), f, "", deployTestLink, "", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.replaced) != 0 || got.Replaced {
+		t.Fatalf("replaced %v — the typed address 127.0.0.1 is not 203.0.113.9", f.replaced)
+	}
+	if len(f.added) != 1 {
+		t.Fatalf("added %v, want one new entry", f.added)
+	}
+	same := &fakeLister{list: guardian.ServerListResponse{Servers: []guardian.ServerEntry{{Name: "home", Host: "203.0.113.9"}}}}
+	if got, err := recordDeployedServer(context.Background(), same, "", deployTestLink, "", "203.0.113.9"); err != nil || !got.Replaced {
+		t.Fatalf("typed the same address: %+v %v", got, err)
 	}
 }

@@ -325,8 +325,15 @@ Servers 窗口整套;Show Details / Logs 页渲染。
   必须加双引号** —— 不加时指纹被写进 `~/Library/Application` 这个野文件(端到端撞到过)。
 - 进度逐行 JSON(step / done / error),失败按类出话(`classifyDeployFailure` ↔ `deployFailure`);
   「已装过」给「重装」、指纹变了给「我重装过它」,其余只说该改什么。
-- **装好只加进清单、不切换**(`deployLister` 里按构造没有切换);同一个地址已在清单里就换它的
-  链接而不是加重复项;装好后从这台 Mac 测一次,连不上时点名服务商的安全组。
+- **装好只加进清单、不切换**(`deployLister` 里按构造没有切换);装好后从这台 Mac 测一次,连不上
+  时点名服务商的安全组。**换掉清单里已有的那条,只在「用户敲的地址 == 链接里的地址」时**,否则加新
+  的一条 —— 链接里的地址是服务器自己探的公网 IP,隧道 / NAT / 代理能让它是另一台的地址(2026-09-30
+  测试容器经隧道出去,把正在用的那台的链接换成了容器的钥匙,当场恢复;
+  `TestAnEntryIsReplacedOnlyWhenTheTypedAddressMatches`)。
+- **先看服务器上有什么**(`internal/deploy` 的 SurveyCommand):已经跑着 bx server ⇒ **沿用**(钥匙、
+  用户、分享出去的链接都不动,只换二进制、不重启),结果页说「钥匙沿用」;端口被别的程序占着 ⇒
+  什么都不改、点名是谁(`port_in_use`);重装(新钥匙)只在用户点了 Reinstall 时。判断在
+  `internal/deploy`,Mac 与手机共用,Mac 这边只是把系统 ssh 包成 `deploy.Session`。
 - 这台 Mac 还没配过 bx:结果给「用这台服务器配置 bx」,链接直接交给 `beginSetup(prefilled:)`。
   反方向也通:首次设置的粘贴框多一个「I Need a Server…」直接打开部署窗口
   (`TestFirstRunSetupOffersToSetUpAServer`)—— 没有链接的新用户不再走到死路。

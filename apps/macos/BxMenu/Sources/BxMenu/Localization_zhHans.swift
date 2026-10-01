@@ -587,4 +587,7 @@ let zhHansTranslations: [String: String] = [
     "Point the Camera at this code and tap the bx link that appears. The bx app on iPhone asks before adding the server. Anyone who can see this code can use your server — close it when you are done.": "把相机对准这个码,点出现的 bx 链接。iPhone 上的 bx 会先问你再添加服务器。看得到这个码的人都能用你的服务器 —— 用完就关掉。",
     "I Need a Server…": "我还没有服务器…",
     "No link yet? If you have a server from a provider (an address, a login and a password), bx can set it up for you.": "还没有链接?如果你在服务商那里买了服务器(有地址、登录名和密码),bx 可以替你把它装好。",
+    "The port bx needs is already used on this server": "这台服务器上,bx 要用的端口已经被占用了",
+    "Another program on the server uses it (see below) — bx did not change anything. Stop that program on the server, or use a server with nothing else on it.": "服务器上另一个程序在用它(见下方)—— bx 什么都没改。在服务器上停掉那个程序,或者换一台没装别的东西的服务器。",
+    "This server already ran bx, so its keys were kept — links you shared from it keep working.": "这台服务器本来就装着 bx,所以沿用了原来的密钥 —— 你分享出去的链接照样能用。",
 ]

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/getbx/bx/internal/deploy"
 	"github.com/getbx/bx/internal/elevate"
 
 	"github.com/getbx/bx/internal/guardian"
@@ -64,85 +65,12 @@ type deployDeps struct {
 	// 已经带好 sudo / 连接参数的那一个。nil = 不试远端,直接本机下载(测试与降级用)。
 	remoteFetch      func(arch string, runRemote func(script string) (string, error)) error
 	writeLocalConfig func(link string) error
+	// onResult 在写本机配置之前拿到部署结果(菜单要知道「这台本来就装好、钥匙沿用」)。nil = 不要。
+	onResult func(deploy.Result)
 }
 
-// releaseArchFromUname 把远端 `uname -m` 的输出映射成 release 的架构名。
-//
-// **认不出来硬失败。** 装错架构的二进制,远端报的是 `exec format error` ——
-// 一句与真实原因毫无关系的话,而那时文件已经传上去、服务装了一半。
-func releaseArchFromUname(out string) (string, error) {
-	switch strings.TrimSpace(out) {
-	case "x86_64", "amd64":
-		return "amd64", nil
-	case "aarch64", "arm64":
-		return "arm64", nil
-	}
-	return "", fmt.Errorf("the remote architecture was not recognized (uname -m says %q); bx only ships linux/amd64 and linux/arm64",
-		strings.TrimSpace(out))
-}
-
-// remoteUploadPaths 是「先传到哪」和「再移到哪」。
-//
-// 分两步是因为直接覆盖一个**正在运行**的二进制会得到 `text file busy`,
-// 而那时旧服务已经被停掉了。
-func remoteUploadPaths() (upload, final string) {
-	return "/tmp/bx.deploy", "/usr/local/bin/bx"
-}
-
-// remoteInstallCommand 拼远端要执行的安装命令。
-//
-// **用户给的每一段都要引起来。** 目标主机、SNI 这些来自命令行,而整条命令交给
-// 远端 shell 执行 —— 少一对引号就是远程命令注入。
-func remoteInstallCommand(opts deployOptions) string {
-	_, final := remoteUploadPaths()
-	parts := []string{shellSingleQuoted(final), "server", "install"}
-	if p := strings.TrimSpace(opts.Protocol); p != "" {
-		parts = append(parts, "--protocol", shellSingleQuoted(p))
-	}
-	if s := strings.TrimSpace(opts.SNI); s != "" {
-		parts = append(parts, "--sni", shellSingleQuoted(s))
-	}
-	if opts.Port > 0 {
-		parts = append(parts, "--port", fmt.Sprintf("%d", opts.Port))
-	}
-	if opts.Force {
-		parts = append(parts, "--force")
-	}
-	return strings.Join(parts, " ")
-}
-
-// clientLinksFromInstallOutput 取出主链接与(如果有的)UDP 链接。
-//
-// **必须剥掉引号**:`bx server install` 打的是一条可直接复制的命令
-// (`sudo bx setup 'bx://AAA' --udp 'bx://BBB'`),链接是带单引号的。
-// 真机第一次跑就是栽在这里 —— 我的 fixture 用的是裸链接。
-//
-// **两条都要**:远端同时给了 reality(TCP)与 hysteria2(UDP),漏掉第二条会让
-// UDP 退回主传输,白白丢掉那条 QUIC 加速。
-func clientLinksFromInstallOutput(out string) (main, udp string, err error) {
-	// **按 `--udp` 认,不按位置认。** 现在打印的是 flag 在前(`--udp 'UDP' 'MAIN'`),以前是
-	// 链接在前(`'MAIN' --udp 'UDP'`);按位置取「第一条 = 主链接」在新格式下把两条对调了。
-	fields := strings.Fields(out)
-	for i := 0; i < len(fields); i++ {
-		field := strings.Trim(fields[i], "'\"`")
-		if field == "--udp" && i+1 < len(fields) {
-			if next := strings.Trim(fields[i+1], "'\"`"); strings.HasPrefix(next, "bx://") {
-				udp = next
-				i++
-			}
-			continue
-		}
-		if strings.HasPrefix(field, "bx://") && main == "" {
-			main = field
-		}
-	}
-	if main == "" {
-		return "", "", fmt.Errorf("the remote host did not produce a bx:// client link; what it said was:\n%s", strings.TrimSpace(out))
-	}
-	return main, udp, nil
-}
-
-// runServerDeploy 执行一次部署。
+// runServerDeploy 执行一次部署:Mac 这一侧的适配。判断全在 internal/deploy(手机那边经 bxkit
+// 用同一份);这里只把系统的 ssh / scp 包成 deploy.Session,把本机下载与上传接成钩子。
 //
 // **任何一步失败都不写本机配置** —— 半成功的部署留下一份指向不存在服务器的配置,
 // 比彻底失败更难查(用户会以为已经换过去了)。
@@ -154,138 +82,64 @@ func runServerDeploy(opts deployOptions, deps deployDeps) error {
 	if say == nil {
 		say = os.Stdout
 	}
-	step := func(id string) {
-		if deps.step != nil {
-			deps.step(id)
-		}
-	}
 	sshCall := func(extra ...string) []string {
 		return append(append([]string{}, opts.SSHOptions...), extra...)
 	}
-	step("connect")
-	// 一次往返同时问「我是谁」和「什么架构」—— 两个都决定后面怎么做。
-	probe, err := deps.run("ssh", sshCall(opts.Host, "id -u; uname -m")...)
-	if err != nil {
-		return fmt.Errorf("could not connect to %s: %w", opts.Host, err)
-	}
-	idLine, unameLine, ok := strings.Cut(strings.TrimSpace(probe), "\n")
-	if !ok {
-		return fmt.Errorf("the remote probe output could not be understood: %q", strings.TrimSpace(probe))
-	}
-	sudo, err := needsSudo(idLine)
-	if err != nil {
-		return err
-	}
-	arch, err := releaseArchFromUname(unameLine)
-	if err != nil {
-		return err
-	}
-	// 非 root 且手里有密码(菜单那条路):sudo 从 stdin 读同一个密码,不需要终端。
-	sudoWithPassword := sudo && opts.Password != "" && deps.runInput != nil
-	if sudo {
-		fmt.Fprintln(say, "• The remote login is not root, so the rest runs under sudo")
-		if !deps.hasTTY && !sudoWithPassword {
-			// 没有终端就问不了密码 —— 与其让它挂住或吐一句无关的错误,
-			// 不如提前说清楚。
-			fmt.Fprintln(say, "  (there is no terminal here, so sudo will fail if it asks for a password — set up NOPASSWD, or re-run this from a terminal)")
+	session := deploySessionFunc(func(cmd string, stdin *string, tty bool) (string, error) {
+		if stdin != nil && deps.runInput != nil {
+			return deps.runInput(*stdin, "ssh", sshCall(opts.Host, cmd)...)
 		}
-	}
-	// runRemote 把「要不要 sudo」「要不要 TTY」收在一处 —— 散在各调用点就会
-	// 有某一条忘了包,而那条的失败方式极难查(前面都成功,只有写文件那步失败)。
-	runRemote := func(script string) (string, error) {
-		if sudoWithPassword {
-			args := sshCall(opts.Host, remoteScriptWithPassword(script))
-			return deps.runInput(opts.Password+"\n", "ssh", args...)
-		}
-		args := sshCall(append(sshArgsFor(opts.Host, sudo, deps.hasTTY), remoteScript(script, sudo))...)
-		return deps.run("ssh", args...)
-	}
-	scpUp := func(local, remote string) error {
-		_, err := deps.run("scp", sshCall(local, opts.Host+":"+remote)...)
-		return err
-	}
-	step("download")
-	upload, final := remoteUploadPaths()
-	// **先让远端自己下。** 它就在目的地那一侧:真机实测 8.36 MB/s,
-	// 而本机经隧道只有 17 KB/s(差 490 倍)。校验和仍然来自本机验过签的清单。
-	if deps.remoteFetch != nil {
-		err := deps.remoteFetch(arch, runRemote)
-		switch {
-		case err == nil:
-			fmt.Fprintln(say, "• The remote host fetched the binary itself and it checks out")
-		case !shouldFallBackToLocalUpload(err):
-			// 校验和不符 —— **绝不回落**。换条路再拿一遍只会掩盖问题。
-			return fmt.Errorf("the remote verification failed: %w", err)
-		default:
-			fmt.Fprintf(say, "• The remote host could not fetch it (%v), so it is downloaded here and uploaded\n", err)
-			local, ferr := deps.fetchBinary(arch)
-			if ferr != nil {
-				return fmt.Errorf("preparing the linux/%s bx binary: %w", arch, ferr)
+		return deps.run("ssh", sshCall(append(sshArgsFor(opts.Host, tty, tty), cmd)...)...)
+	})
+	hooks := deploy.Hooks{
+		Step:         deps.step,
+		Say:          say,
+		HasTTY:       deps.hasTTY,
+		CanFeedStdin: deps.runInput != nil,
+		FetchBinary:  deps.remoteFetch,
+		LocalFallback: func(arch, upload string) error {
+			local, err := deps.fetchBinary(arch)
+			if err != nil {
+				return fmt.Errorf("preparing the linux/%s bx binary: %w", arch, err)
 			}
-			if serr := scpUp(local, upload); serr != nil {
-				return fmt.Errorf("uploading the binary: %w", serr)
+			if _, err := deps.run("scp", sshCall(local, opts.Host+":"+upload)...); err != nil {
+				return fmt.Errorf("uploading the binary: %w", err)
 			}
-		}
-	} else {
-		local, ferr := deps.fetchBinary(arch)
-		if ferr != nil {
-			return fmt.Errorf("preparing the linux/%s bx binary: %w", arch, ferr)
-		}
-		if serr := scpUp(local, upload); serr != nil {
-			return fmt.Errorf("uploading the binary: %w", serr)
-		}
+			return nil
+		},
 	}
-	step("install")
-	if _, err := runRemote(fmt.Sprintf("chmod +x %s && mv %s %s",
-		shellSingleQuoted(upload), shellSingleQuoted(upload), shellSingleQuoted(final))); err != nil {
-		return fmt.Errorf("putting the binary in place: %w", err)
+	if deps.fetchBinary == nil {
+		hooks.LocalFallback = nil
 	}
-	out, err := runRemote(remoteInstallCommand(opts))
-	if err != nil {
-		return fmt.Errorf("the remote installation failed: %w\n%s", err, strings.TrimSpace(out))
-	}
-	main, udp, err := clientLinksFromInstallOutput(out)
+	res, err := deploy.Run(deploy.Options{
+		Target: opts.Host, Address: deployAddress(opts.Host), Protocol: opts.Protocol, SNI: opts.SNI,
+		Port: opts.Port, Force: opts.Force, Password: opts.Password,
+	}, session, hooks)
 	if err != nil {
 		return err
 	}
-	// **放行防火墙。** 真机上 Ubuntu 24.04 的 ufw 默认 `deny (incoming)`:
-	// 服务装好了、端口 LISTEN 了,而外面进不来。`bx server install` 只打了一句
-	// 提示,而一条声称「一条命令装好」的路径把最后一道留给用户去读提示,
-	// 等于没装好。UDP 也要开 —— hysteria2 走 QUIC。
-	port := opts.Port
-	if port <= 0 {
-		port = 443
+	if deps.onResult != nil {
+		deps.onResult(res)
 	}
-	step("firewall")
-	fwOut, err := runRemote(remoteFirewallCommand(port))
-	switch {
-	case err != nil:
-		fmt.Fprintf(say, "⚠ The firewall port %d could not be opened automatically; if it is unreachable from outside, open it by hand: %v\n", port, err)
-	case strings.TrimSpace(fwOut) != "":
-		// **改了别人的防火墙就要说出来。** 静默修改系统状态,用户既无从复核也
-		// 无从撤销 —— 而这条命令的其余每一步都会打一行。
-		fmt.Fprintf(say, "• %s\n", strings.TrimSpace(fwOut))
-	default:
-		fmt.Fprintln(say, "• ufw is not enabled on the remote host, so no firewall was changed (if there is a cloud security group, remember to open that port)")
+	if res.UDP != "" {
+		return deps.writeLocalConfig(res.Main + " --udp " + res.UDP)
 	}
-	// 装完就启动 —— 一条命令该留下一台**在跑**的服务器,而不是一台装好没开的。
-	step("start")
-	if _, err := runRemote(shellSingleQuoted(final) + " server start"); err != nil {
-		fmt.Fprintf(say, "⚠ The remote service did not start by itself; log in and run bx server start once: %v\n", err)
-	}
-	if udp != "" {
-		return deps.writeLocalConfig(main + " --udp " + udp)
-	}
-	return deps.writeLocalConfig(main)
+	return deps.writeLocalConfig(res.Main)
 }
 
-// shellSingleQuoted 把一段文本包成 POSIX shell 的单引号字面量。
-//
-// **这是一道注入闸门,不是格式化。** 远端命令由 shell 执行,而其中的主机名、
-// SNI 等来自命令行。单引号里除了单引号本身之外一切都是字面量,故只需把每个
-// 单引号换成 `'\”`(收尾、转义一个、再开头)。
-func shellSingleQuoted(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+// deploySessionFunc adapts a function to deploy.Session.
+type deploySessionFunc func(cmd string, stdin *string, tty bool) (string, error)
+
+func (f deploySessionFunc) Run(cmd string, stdin *string, tty bool) (string, error) {
+	return f(cmd, stdin, tty)
+}
+
+// deployAddress is the host part of user@host (an ssh_config alias stays as it is).
+func deployAddress(target string) string {
+	if i := strings.LastIndex(target, "@"); i >= 0 {
+		return target[i+1:]
+	}
+	return target
 }
 
 // serverDeployAction 是 `bx server deploy` 的入口。
@@ -599,39 +453,6 @@ func verifyAssetBytes(data []byte, asset updatepkg.Asset) error {
 	return nil
 }
 
-// remoteFetchCommand 让远端自己把二进制拉下来,并用**本机验过签的清单里那个
-// 校验和**当场核对。
-//
-// 真机实测(2026-08-14):同一个 27.6MB 资产,VPS 直下 8.36 MB/s,本机经隧道
-// 17 KB/s —— 差 490 倍。让远端下是因为它就在目的地那一侧;校验和仍然来自本机,
-// 因为供应链的权威必须留在管理员手里(远端自己算自己的哈希毫无意义)。
-func remoteFetchCommand(tag string, asset updatepkg.Asset) string {
-	url := repoReleaseDL + "/" + tag + "/" + asset.Name
-	upload, _ := remoteUploadPaths()
-	tarball := upload + ".tar.gz"
-	return strings.Join([]string{
-		"set -e",
-		"curl -fsSL --retry 2 -o " + shellSingleQuoted(tarball) + " " + shellSingleQuoted(url),
-		// 校验和不符就**硬失败并删掉**:留着一个坏文件比没有更危险。
-		`printf '%s  %s\n' ` + shellSingleQuoted(asset.SHA256) + " " + shellSingleQuoted(tarball) +
-			" | sha256sum -c - || { rm -f " + shellSingleQuoted(tarball) + "; echo 'bx: checksum mismatch' >&2; exit 1; }",
-		"tar -xzf " + shellSingleQuoted(tarball) + " -O bx > " + shellSingleQuoted(upload),
-		"rm -f " + shellSingleQuoted(tarball),
-	}, "\n")
-}
-
-// shouldFallBackToLocalUpload 判断远端那次失败该不该回落到「本机下载 + scp」。
-//
-// **取不到东西**(没 curl、连不上、超时)→ 换条路是对的。
-// **拿到的东西不对**(校验和不符)→ **绝不回落**:换条路再拿一遍只会掩盖问题,
-// 而问题可能是有人在中间换了文件。
-func shouldFallBackToLocalUpload(err error) bool {
-	if err == nil {
-		return false
-	}
-	return !strings.Contains(strings.ToLower(err.Error()), "checksum mismatch")
-}
-
 // remoteFetchBinary 让远端自己下载并核对二进制。
 func remoteFetchBinary(arch string, runRemote func(script string) (string, error), out io.Writer) error {
 	client := &http.Client{Transport: stallSafeTransport()}
@@ -648,71 +469,11 @@ func remoteFetchBinary(arch string, runRemote func(script string) (string, error
 		return err
 	}
 	fmt.Fprintf(out, "• Letting the remote host fetch %s (%s) itself; the checksum comes from the signed manifest read here\n", asset.Name, tag)
-	text, err := runRemote(remoteFetchCommand(tag, asset))
+	text, err := runRemote(deploy.FetchCommand(tag, asset))
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(text))
 	}
 	return nil
-}
-
-// remoteFirewallCommand 放行隧道端口。
-//
-// **ufw 不在或没启用时安静通过** —— 一台没装防火墙的机器不该因此部署失败。
-// TCP 与 UDP 都要:reality 走 TCP,hysteria2 走 QUIC/UDP,只开一半会让另一半
-// 静默失效(而 bx status 那时仍会显示主隧道健康)。
-func remoteFirewallCommand(port int) string {
-	p := fmt.Sprintf("%d", port)
-	return strings.Join([]string{
-		"if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | head -1 | grep -q active; then",
-		"  ufw allow " + p + "/tcp >/dev/null || true",
-		"  ufw allow " + p + "/udp >/dev/null || true",
-		"  echo 'bx: ufw now allows " + p + "/tcp and " + p + "/udp'",
-		"fi",
-	}, "\n")
-}
-
-// needsSudo 从远端 `id -u` 的输出判断要不要 sudo。
-//
-// **问远端,不是让用户记得加 `--sudo`** —— 他多半不知道要加。
-// `PermitRootLogin prohibit-password` 是 Debian/Ubuntu 的默认值,只有 sudo
-// 用户的人今天会撞到一句没有指引的 `Permission denied`(2026-08-14 真机)。
-//
-// 解析不出来时报错而不是猜:猜 root 会让每条命令都失败,猜 sudo 会在真 root
-// 的机器上多要一次不存在的密码。
-func needsSudo(idOutput string) (bool, error) {
-	uid := strings.TrimSpace(idOutput)
-	if uid == "" {
-		return false, errors.New("the remote host reported no uid (id -u printed nothing)")
-	}
-	switch uid {
-	case "0":
-		return false, nil
-	}
-	for _, r := range uid {
-		if r < '0' || r > '9' {
-			return false, fmt.Errorf("the remote id -u did not print something that looks like a uid: %q", uid)
-		}
-	}
-	return true, nil
-}
-
-// remoteScript 把一段(可能多行的)脚本交给远端执行,必要时整段包进 sudo。
-//
-// **要害在「整段」。** 简单地在前面加 "sudo " 只作用于第一条命令,后面每一条
-// 都会以普通用户身份跑 —— 而失败方式极难查:文件下下来了、校验过了,
-// 却写不进 /usr/local/bin。
-func remoteScript(script string, sudo bool) string {
-	if !sudo {
-		return script
-	}
-	return "sudo sh -c " + shellSingleQuoted(script)
-}
-
-// remoteScriptWithPassword 同 remoteScript,但 sudo 从 stdin 读密码(-S)且不打提示(-p ”)。
-// 菜单那条路没有终端,而非 root 登录的 sudo 多半要密码 —— 用户在窗口里填的就是它。
-// 同样**整段**包进去,理由同上。
-func remoteScriptWithPassword(script string) string {
-	return "sudo -S -p '' sh -c " + shellSingleQuoted(script)
 }
 
 // sshArgsFor 是连这台机器要带的 ssh 参数。

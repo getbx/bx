@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/getbx/bx/internal/config"
+	"github.com/getbx/bx/internal/deploy"
 	"github.com/getbx/bx/internal/guardian"
 	"github.com/getbx/bx/internal/setup"
 )
@@ -166,7 +167,10 @@ func classifyDeployFailure(text string) string {
 		return "unsupported_system"
 	case has("checksum mismatch", "checksum of"):
 		return "checksum"
-	case has("already exists (pass --force"):
+	case has("is already used by"):
+		// 端口被别的程序占着(网站、别家代理)。什么都没改。
+		return "port_in_use"
+	case has("already exists (pass --force", "already has bx, but"):
 		// 这台上已经装过 bx server。菜单据此问「重装(换新钥匙)吗」,而不是报一句失败。
 		return "already_installed"
 	}
@@ -178,12 +182,14 @@ type deployEvent struct {
 	Event string `json:"event"` // step | done | error
 	Step  string `json:"step,omitempty"`
 	// done
-	Name     string                `json:"name,omitempty"`
-	Host     string                `json:"host,omitempty"`
-	Added    bool                  `json:"added"`
-	Replaced bool                  `json:"replaced,omitempty"`
-	Current  bool                  `json:"current,omitempty"`
-	Probe    *guardian.ProbeReport `json:"probe,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Host     string `json:"host,omitempty"`
+	Added    bool   `json:"added"`
+	Replaced bool   `json:"replaced,omitempty"`
+	// Reused:这台本来就跑着 bx server,钥匙沿用(已经分享出去的链接照样能用),没有重装。
+	Reused  bool                  `json:"reused,omitempty"`
+	Current bool                  `json:"current,omitempty"`
+	Probe   *guardian.ProbeReport `json:"probe,omitempty"`
 	// NotSetUp:服务器装好了,但这台 Mac 上 bx 还没配过 —— 链接交回菜单去走首次设置。
 	NotSetUp bool   `json:"not_set_up,omitempty"`
 	Link     string `json:"link,omitempty"`
@@ -218,7 +224,12 @@ type recordedServer struct {
 //     重复项会把旧的、已经失效的钥匙留在清单里。
 //   - 否则按名字加(没给名字就用地址);名字被**另一台**占着就加后缀,绝不覆盖别人。
 //   - 从不切换。
-func recordDeployedServer(ctx context.Context, c deployLister, want, main, udp string) (recordedServer, error) {
+//
+// **「同一个地址」只认用户敲的那个地址。** 链接里的地址是服务器自己探出来的公网 IP —— 隧道、
+// NAT VPS、代理都能让它变成**另一台机器**的地址(2026-09-30,所有者的 Mac 上:测试容器的流量经
+// 所有者的隧道出去,链接里写的是所有者 VPS 的地址,于是正在用的那台的链接被换成了容器的钥匙)。
+// 两者不一致时一律加一条新的,绝不替换 —— 多一条可以删,换坏一条会断网。
+func recordDeployedServer(ctx context.Context, c deployLister, want, main, udp, typedAddress string) (recordedServer, error) {
 	host, ok := setup.LinkHost(main)
 	if !ok || host == "" {
 		return recordedServer{}, fmt.Errorf("the server's link does not name a host")
@@ -228,8 +239,9 @@ func recordDeployedServer(ctx context.Context, c deployLister, want, main, udp s
 		return recordedServer{}, fmt.Errorf("%w: %v", errDeployNotSetUp, err)
 	}
 	rec := recordedServer{Host: host}
+	sameMachine := strings.EqualFold(strings.TrimSpace(typedAddress), host)
 	for _, e := range list.Servers {
-		if e.Host == host && (want == "" || want == e.Name) {
+		if sameMachine && e.Host == host && (want == "" || want == e.Name) {
 			if err := c.ReplaceServer(ctx, e.Name, main, udp); err != nil {
 				return recordedServer{}, err
 			}
@@ -285,18 +297,20 @@ func runDeployForMenu(opts deployOptions, deps deployDeps, lister deployLister, 
 	}
 	deps.out = io.Discard
 	deps.step = func(id string) { send(deployEvent{Event: "step", Step: id}) }
+	reused := false
+	deps.onResult = func(r deploy.Result) { reused = r.Reused }
 	var done deployEvent
 	deps.writeLocalConfig = func(link string) error {
 		main, udp := splitDeployedLink(link)
 		send(deployEvent{Event: "step", Step: "add"})
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
-		rec, err := recordDeployedServer(ctx, lister, opts.Name, main, udp)
+		rec, err := recordDeployedServer(ctx, lister, opts.Name, main, udp, deployAddress(opts.Host))
 		switch {
 		case errors.Is(err, errDeployNotSetUp):
 			// 服务器已经装好了 —— 链接交回菜单,让它接着走首次设置,别让这台白装。
 			host, _ := setup.LinkHost(main)
-			done = deployEvent{Event: "done", Host: host, NotSetUp: true, Link: main, UDP: udp}
+			done = deployEvent{Event: "done", Host: host, NotSetUp: true, Link: main, UDP: udp, Reused: reused}
 			return nil
 		case err != nil:
 			return fmt.Errorf("adding it to your server list: %w", err)
@@ -307,6 +321,7 @@ func runDeployForMenu(opts deployOptions, deps deployDeps, lister deployLister, 
 		done = deployEvent{
 			Event: "done", Name: rec.Name, Host: rec.Host, Added: true,
 			Replaced: rec.Replaced, Current: rec.Current, Probe: rec.Probe, Link: main, UDP: udp,
+			Reused: reused,
 		}
 		return nil
 	}

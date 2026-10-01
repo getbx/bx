@@ -121,6 +121,8 @@ struct DeployEvent: Decodable, Equatable {
     var host: String?
     var added: Bool?
     var replaced: Bool?
+    /// 这台本来就跑着 bx server:钥匙沿用,没有重装。
+    var reused: Bool?
     var current: Bool?
     var probe: DeployProbe?
     var notSetUp: Bool?
@@ -130,15 +132,15 @@ struct DeployEvent: Decodable, Equatable {
     var detail: String?
 
     init(event: String, step: String? = nil, name: String? = nil, host: String? = nil, added: Bool? = nil,
-         replaced: Bool? = nil, current: Bool? = nil, probe: DeployProbe? = nil, notSetUp: Bool? = nil,
+         replaced: Bool? = nil, reused: Bool? = nil, current: Bool? = nil, probe: DeployProbe? = nil, notSetUp: Bool? = nil,
          link: String? = nil, udp: String? = nil, code: String? = nil, detail: String? = nil) {
         self.event = event; self.step = step; self.name = name; self.host = host; self.added = added
-        self.replaced = replaced; self.current = current; self.probe = probe; self.notSetUp = notSetUp
+        self.replaced = replaced; self.reused = reused; self.current = current; self.probe = probe; self.notSetUp = notSetUp
         self.link = link; self.udp = udp; self.code = code; self.detail = detail
     }
 
     enum CodingKeys: String, CodingKey {
-        case event, step, name, host, added, replaced, current, probe, link, udp, code, detail
+        case event, step, name, host, added, replaced, reused, current, probe, link, udp, code, detail
         case notSetUp = "not_set_up"
     }
 }
@@ -211,6 +213,9 @@ func deployFailure(_ code: String) -> DeployFailurePresentation {
         return .init(headline: L("This server's identity changed"),
                      advice: L("That is expected if you reinstalled the server. If you did not, someone may be in between — do not continue."),
                      action: .forgetHostKey)
+    case "port_in_use":
+        return .init(headline: L("The port bx needs is already used on this server"),
+                     advice: L("Another program on the server uses it (see below) — bx did not change anything. Stop that program on the server, or use a server with nothing else on it."))
     case "already_installed":
         return .init(headline: L("bx is already installed on this server"),
                      advice: L("Reinstalling creates new keys: links you shared from this server stop working."),
@@ -260,6 +265,9 @@ func deployResult(_ e: DeployEvent) -> DeployResultPresentation {
         }
     } else {
         detail = L("It was added to your servers. Your current exit did not change — switch to it in Servers when you want.")
+    }
+    if e.reused == true {
+        detail = L("This server already ran bx, so its keys were kept — links you shared from it keep working.") + " " + detail
     }
     switch e.probe {
     case let probe? where probe.measured && probe.reachable:

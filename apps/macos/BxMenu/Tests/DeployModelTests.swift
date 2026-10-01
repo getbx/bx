@@ -104,7 +104,24 @@ struct DeployModelTests {
         expect(none.phoneLink == nil, "no link, no phone button")
     }
 
+    // A server that already ran bx was kept, not rebuilt: say so, because what the person wants to
+    // know is whether the links they already shared still work.
+    static func testAReusedServerSaysItsKeysWereKept() {
+        let r = deployResult(DeployEvent(event: "done", name: "tokyo", added: true, reused: true))
+        expect(r.detail.contains("keys were kept"), "reused result: \(r.detail)")
+        let fresh = deployResult(DeployEvent(event: "done", name: "tokyo", added: true))
+        expect(!fresh.detail.contains("keys were kept"), "a fresh install must not claim that")
+    }
+
+    static func testAPortInUseSaysNothingChanged() {
+        let f = deployFailure("port_in_use")
+        expect(f.headline.contains("already used") && f.advice.contains("did not change anything") && f.action == nil,
+               "port_in_use: \(f)")
+    }
+
     static func main() {
+        testAReusedServerSaysItsKeysWereKept()
+        testAPortInUseSaysNothingChanged()
         testTheResultCarriesTheLinkForThePhone()
         testArgumentsCarryTheFlagNeverThePassword()
         testValidationCatchesTypos()
