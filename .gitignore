@@ -15,3 +15,7 @@ apps/ios/Frameworks/
 apps/ios/*.xcodeproj/
 apps/ios/build/
 apps/ios/build-sim/
+
+# Local agent and tooling state (never part of the project).
+/.claude/
+/.superpowers/

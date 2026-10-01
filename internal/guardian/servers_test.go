@@ -1477,7 +1477,7 @@ func TestServerReplaceRejectsALinkWithNoParseableHost(t *testing.T) {
 // (把此刻在用的那一台写明白),对 replace 就是多写了一个用户没写过的键:
 // 从此 RemoveServer 会拒绝删掉 tokyo,而用户只是换了一条链接。
 //
-// **这与不走 UpsertServer 是同一种伤害换了一扇门进来。**
+// **这与「替换时顺手设为当前」是同一种伤害换了一扇门进来。**
 func TestServerReplaceDoesNotPickAnExitForACurrentlessConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	body := "servers:\n" +

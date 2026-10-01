@@ -6,9 +6,15 @@ on:
       - master
   pull_request:
 
+# A newer push to the same branch makes the older run moot.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
 
@@ -54,6 +60,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
 
@@ -87,6 +94,7 @@ jobs:
   # 以及带 `purity_test.go` 的纯判据包(按构造与平台无关,在哪儿都该一样)。
   test-windows:
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
 
@@ -120,6 +128,7 @@ jobs:
   # swiftc 直编直跑。少任何一步都会漏掉一半代码。
   macos-app:
     runs-on: macos-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
 
@@ -197,6 +206,7 @@ jobs:
   # 只验「全新安装之后系统应该长什么样」,而那恰好就是上面那个 bug 违反的契约。
   macos-fresh-install:
     runs-on: macos-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
 
@@ -288,6 +298,7 @@ jobs:
 
   integration:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
 

@@ -238,7 +238,9 @@ jobs:
             --package darwin/amd64:dist/bx-macos-amd64.tar.gz \
             --package darwin/arm64:dist/bx-macos-arm64.tar.gz
           cd dist
-          sha256sum *.tar.gz *.zip bx-update.json bx-update.json.sig > SHA256SUMS
+          # The .dmg and bx-setup.exe are what README tells people to download: they must be in
+          # here too (before 2026-10-01 they were not, and nothing verified the recommended installers).
+          sha256sum *.tar.gz *.zip *.dmg *.exe bx-update.json bx-update.json.sig > SHA256SUMS
 
       - name: Publish release
         uses: softprops/action-gh-release@v2

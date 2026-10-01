@@ -233,8 +233,8 @@ fake-IP 反查全部命中。样本约 150 条,要跑几天再定论。
   原始错误串不出门;认不出的回落旧常量,消费方必须留「说不出是哪种」的分支。
 - **改清单的动词另立能力 `servers_edit`**:只声明 `servers` 的旧 Guardian 收到 `remove`
   会落进兼容分支**切到那一台**,「试着拨一下」的代价是换掉用户的出口国。删当前那台服务端
-  409。换链接走 `setup.ReplaceServerLink`(`UpsertServer`/`AddServer` 都会挪 `current`,
-  换一条没在用那台的链接会顺手搬走出口)。
+  409。换链接走 `setup.ReplaceServerLink`(`AddServer` 在清单没有 `current` 时会补写一个,
+  换链接若借它的路会顺手定下出口;换出口只走 `SetCurrentServer`)。
   `servers add` 同名回 409;名字可省略,Guardian 用 `setup.LinkHost` 推导(认 `bx://` 换壳)。
 - **所有者定死的边界**:不自动容灾、只有用户能切;不按延迟排序、不自动选最快、不分组、
   不导入订阅;**不后台定时探测**(探测走在隧道外面,几台同时握手是很整齐的模式);

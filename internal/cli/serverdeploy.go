@@ -246,23 +246,10 @@ func readPasswordLine(r io.Reader) (string, error) {
 	return line, nil
 }
 
-// runDeployCommand 执行一条 ssh/scp。
+// fetchLinuxBinary 在本机下载并校验远端要用的那个 bx 二进制 —— **只是退路**。
 //
-// **stdin 接到终端**:ssh 可能要问密码或 known_hosts 确认,吞掉 stdin 会让它
-// 静默失败,而用户只看到一句「连不上」。
-func runDeployCommand(name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
-	return string(out), err
-}
-
-// fetchLinuxBinary 准备好远端要用的那个 bx 二进制。
-//
-// **从本机下载而不是让服务器自己 curl。** 裸 VPS 的连通性是未知数,而本机
-// 这一侧的环境是已知可用的(尤其是它多半正跑着 bx)。顺带,下载物在本机
-// 校验过 sha256 才上传,供应链只有一跳。
+// 首选是远端自己下载(remoteFetchBinary:VPS 在目的地那一侧,实测快几百倍),用本机验过
+// 签名的 sha256 在远端核对;远端取不到时才走这里,在本机校验后 scp 上去。
 func fetchLinuxBinary(arch string) (string, error) {
 	client := &http.Client{Transport: stallSafeTransport()}
 	tag, err := latestReleaseTag(client)

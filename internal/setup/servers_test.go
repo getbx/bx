@@ -86,20 +86,20 @@ current: beta
 	}
 }
 
-// **加一台:名字已存在就就地更新,否则追加;两种情况都把 current 设成它。**
-func TestUpsertServer(t *testing.T) {
+// **加一台:名字已存在就就地更新,否则追加;两种情况都不动 current。**
+func TestAddServerUpdatesASameNamedServerInPlace(t *testing.T) {
 	path := writeTemp(t, oneServerConfig)
-	added, err := UpsertServer(path, "beta", "vless://u@2.2.2.2:443?security=reality", "hysteria2://p@2.2.2.2:443")
+	added, err := AddServer(path, "beta", "vless://u@2.2.2.2:443?security=reality", "hysteria2://p@2.2.2.2:443")
 	if err != nil || !added {
 		t.Fatalf("added=%v err=%v", added, err)
 	}
 	list, current, _ := ListServers(path)
-	if len(list) != 2 || current != "beta" {
+	if len(list) != 2 || current != "alpha" {
 		t.Fatalf("清单=%d current=%q", len(list), current)
 	}
 
 	// 同名再来一次:就地更新,不追加。
-	added, err = UpsertServer(path, "beta", "vless://u@3.3.3.3:443?security=reality", "")
+	added, err = AddServer(path, "beta", "vless://u@3.3.3.3:443?security=reality", "")
 	if err != nil || added {
 		t.Fatalf("同名应当是更新而不是追加:added=%v err=%v", added, err)
 	}
@@ -116,13 +116,13 @@ func TestUpsertServer(t *testing.T) {
 
 // **旧式配置要能迁过来。** 用户手里绝大多数是 `server:` + `udp.transport:`,
 // 加第二台时不该要求他先手工改格式。
-func TestUpsertMigratesLegacySingleServerConfig(t *testing.T) {
+func TestAddServerMigratesLegacySingleServerConfig(t *testing.T) {
 	path := writeTemp(t, `server: vless://u@1.1.1.1:443?security=reality
 udp:
     transport: hysteria2://p@1.1.1.1:443
 global: true
 `)
-	if _, err := UpsertServer(path, "beta", "vless://u@2.2.2.2:443?security=reality", ""); err != nil {
+	if _, err := AddServer(path, "beta", "vless://u@2.2.2.2:443?security=reality", ""); err != nil {
 		t.Fatal(err)
 	}
 	list, current, err := ListServers(path)
@@ -132,8 +132,9 @@ global: true
 	if len(list) != 2 {
 		t.Fatalf("旧配置没被迁成第一台:清单=%d %+v", len(list), list)
 	}
-	if current != "beta" {
-		t.Fatalf("current = %q", current)
+	// 迁移出来的那台就是此刻在用的那台;加一台不许把出口挪过去。
+	if current == "beta" {
+		t.Fatalf("current = %q:加一台把出口挪到了新加的那台", current)
 	}
 	// 旧的那台必须带着它的 UDP 一起迁过来 —— 丢了它,切回去时 UDP 会静默走主传输。
 	var legacy *struct{ udp string }
@@ -217,20 +218,6 @@ func TestAddServerFillsAnEmptyCurrent(t *testing.T) {
 	}
 	if _, current, _ := ListServers(path); current != "tokyo" {
 		t.Fatalf("current = %q,空清单加第一台之后它必须有值", current)
-	}
-}
-
-// UpsertServer 仍然会把 current 换过去 —— 它服务的是 `bx setup`(「用这一台」),
-// 与 AddServer 是两个意图。合并它们会让其中一个悄悄改变行为。
-func TestUpsertStillSwitchesBecauseThatIsItsJob(t *testing.T) {
-	path := writeTemp(t, "servers:\n"+
-		"    - name: tokyo\n      link: vless://a@203.0.113.10:443\n"+
-		"current: tokyo\n")
-	if _, err := UpsertServer(path, "osaka", "vless://b@203.0.113.20:443", ""); err != nil {
-		t.Fatal(err)
-	}
-	if _, current, _ := ListServers(path); current != "osaka" {
-		t.Fatalf("current = %q, want osaka", current)
 	}
 }
 

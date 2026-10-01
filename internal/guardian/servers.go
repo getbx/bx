@@ -730,11 +730,10 @@ func removeServerEntry(w http.ResponseWriter, req serversRequest, configPath str
 // **它不动 current,也不热切任何东西。** 换链接是修一条记录,不是「把我的流量
 // 换到那里去」—— 与 addServerEntry 同一条判断。
 //
-// **刻意不走 setup.UpsertServer,尽管那个函数当初就是为这件事写的、至今零生产
-// 调用方**(spec §7.2 原本就是这么写的,这里是有意偏离):它会把 current 设成
-// 被改的那一台(TestUpsertStillSwitchesBecauseThatIsItsJob 钉着这个行为:它
-// 服务的是 `bx setup`「用这一台」),于是换一条**没在用**那台的链接会顺手把
-// 出口换过去,而界面上只说了「已替换」。
+// **刻意不用「加一台并设为当前」那种写法**(spec §7.2 原本就是这么写的,这里是有意
+// 偏离;那个函数 setup.UpsertServer 零生产调用方,2026-10-01 已删):它会把 current
+// 设成被改的那一台,于是换一条**没在用**那台的链接会顺手把出口换过去,而界面上只说了
+// 「已替换」。
 //
 // **也不走 setup.AddServer** —— 它只差半步:current 空着时它会填上(填的是
 // 清单里第一台,所以自 2026-09-13 起**不再挪动出口**,见 setup.settleCurrent)。
