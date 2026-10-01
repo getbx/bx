@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/getbx/bx/internal/explainwords"
 )
 
 // iPhone 上「保护」页那面盾,与 macOS 菜单栏、Windows 托盘是同一面盾(形态即状态:实心/空心/虚线/
@@ -184,5 +186,75 @@ func TestIOSDeployPasswordIsNeverStored(t *testing.T) {
 	clear, hand := strings.Index(body, `password = ""`), strings.Index(body, "runner.run(")
 	if clear < 0 || hand < 0 || clear > hand {
 		t.Errorf("the password is not cleared before it is handed over (clear=%d hand=%d)", clear, hand)
+	}
+}
+
+// iPhone App 的界面跟随系统语言:**每一句**用户看得到的英文都要有简体中文(App/zh-Hans.lproj)。
+// 这个 App 是给小白用的,而小白的 iPhone 多半是中文 —— 英文界面本身就是一道门槛。
+// 判据与 Mac 菜单那条(TestMenuEveryLocalizedStringHasAChineseTranslation)同形:源码里的每一句都有
+// 译文,词表里的每一条都还有人用。SwiftUI 的字面量(Text("…") 等)自动查表;代码里拼出来的那些
+// 必须写成 String(localized: "…") 才会查表 —— 两种都在这里被扫到。
+func TestIOSEveryVisibleStringHasAChineseTranslation(t *testing.T) {
+	root := filepath.Join("..", "..", "apps", "ios")
+	call := regexp.MustCompile(`\b(?:Text|Button|Label|LabeledContent|navigationTitle|TextField|SecureField|ContentUnavailableView|DisclosureGroup|Toggle|Section|String\(localized:)\s*\(?\s*"((?:[^"\\]|\\.)*)"`)
+	choice := regexp.MustCompile(`choice\("[^"]+",\s*"((?:[^"\\]|\\.)*)",\s*\n?\s*"((?:[^"\\]|\\.)*)"`)
+	notUI := regexp.MustCompile(`^(bx://|vless://|[a-z]+\.[a-z.]+$|BrandMark$|203\.0\.113\.9$|22$|root$|Simulated scan$)`)
+	letters := regexp.MustCompile(`[A-Za-z]{2}`)
+	interp := regexp.MustCompile(`\\\((?:[^()]|\([^()]*\))*\)`)
+	key := func(s string) string { return strings.ReplaceAll(interp.ReplaceAllString(s, "%@"), `\"`, `"`) }
+	files, _ := filepath.Glob(filepath.Join(root, "App", "*.swift"))
+	used := map[string]string{}
+	for _, f := range files {
+		base := filepath.Base(f)
+		switch base {
+		case "Driver.swift", "RawProbe.swift", "Probe.swift", "LinkStore.swift", "Brand.swift", "Shield.swift":
+			continue // headless driver and non-text views
+		}
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range call.FindAllStringSubmatch(string(raw), -1) {
+			if notUI.MatchString(m[1]) || !letters.MatchString(m[1]) {
+				continue
+			}
+			used[key(m[1])] = base
+		}
+		for _, m := range choice.FindAllStringSubmatch(string(raw), -1) {
+			used[key(m[1])], used[key(m[2])] = base, base
+		}
+	}
+	if len(used) < 50 {
+		t.Fatalf("only %d strings found — the guard no longer reads the app's sources", len(used))
+	}
+	// Explain 的「原因」来自 Go 的措辞表(Mac 与手机共用),在手机上按原句查表翻译。
+	for _, label := range explainwords.AllLabels() {
+		used[label] = "internal/explainwords"
+	}
+	bxkitSrc, err := os.ReadFile(filepath.Join("..", "..", "mobile", "bxkit", "bxkit.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range regexp.MustCompile(`a\.Because = "((?:[^"\\]|\\.)*)"`).FindAllStringSubmatch(string(bxkitSrc), -1) {
+		used[m[1]] = "mobile/bxkit"
+	}
+	table, err := os.ReadFile(filepath.Join(root, "App", "zh-Hans.lproj", "Localizable.strings"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := regexp.MustCompile(`(?m)^"((?:[^"\\]|\\.)*)"\s*=\s*"((?:[^"\\]|\\.)*)";`)
+	translated := map[string]bool{}
+	for _, m := range entry.FindAllStringSubmatch(string(table), -1) {
+		translated[strings.ReplaceAll(m[1], `\"`, `"`)] = true
+	}
+	for k, file := range used {
+		if !translated[k] {
+			t.Errorf("%s: %q has no Chinese translation in App/zh-Hans.lproj/Localizable.strings", file, k)
+		}
+	}
+	for k := range translated {
+		if _, ok := used[k]; !ok {
+			t.Errorf("Localizable.strings has %q, which no screen uses any more", k)
+		}
 	}
 }

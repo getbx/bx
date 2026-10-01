@@ -590,4 +590,7 @@ let zhHansTranslations: [String: String] = [
     "The port bx needs is already used on this server": "这台服务器上,bx 要用的端口已经被占用了",
     "Another program on the server uses it (see below) — bx did not change anything. Stop that program on the server, or use a server with nothing else on it.": "服务器上另一个程序在用它(见下方)—— bx 什么都没改。在服务器上停掉那个程序,或者换一台没装别的东西的服务器。",
     "This server already ran bx, so its keys were kept — links you shared from it keep working.": "这台服务器本来就装着 bx,所以沿用了原来的密钥 —— 你分享出去的链接照样能用。",
+    "Shows a code to scan with bx on your iPhone, for the server this Mac is using.": "显示一个二维码,用 iPhone 上的 bx 扫一下,就能用上这台 Mac 正在用的服务器。",
+    "Could not add to iPhone": "没能加到 iPhone",
+    "Reading the server's link failed.": "读取服务器链接失败。",
 ]

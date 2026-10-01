@@ -1277,6 +1277,9 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.onDeploy = { [weak self] in
             self?.openDeployWindow()
         }
+        controller.onAddToPhone = { [weak self] in
+            self?.showCurrentServerForPhone()
+        }
         controller.onAddServer = { [weak self] in
             self?.addServerFromWindow()
         }
@@ -3531,6 +3534,28 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !runAppleScript(script) {
             showMessage(L("Terminal permission needed"), L("Allow bx to control Terminal when macOS asks, then try again. You can review this in System Settings > Privacy & Security > Automation."))
         }
+    }
+
+    /// 「Add to iPhone…」(Servers 窗口):当前这台的链接画成二维码。
+    ///
+    /// 链接在 root-only 的配置里,所以经一次**管理员授权**(与首次设置同一条 AppleScript 路)让
+    /// `bx phone-link` 读出来 —— 不新开任何读它的口子(Guardian 从不发链接)。只进内存、只画成码。
+    private func showCurrentServerForPhone() {
+        let source = "do shell script \(shellQuoted("'\(bxPath)' phone-link")) with administrator privileges"
+        var error: NSDictionary?
+        let result = NSAppleScript(source: source)?.executeAndReturnError(&error)
+        if let error {
+            // 用户点了取消就什么都不说;别的失败(比如当前是 brook 服务器)如实说。
+            if (error[NSAppleScript.errorNumber] as? Int) == -128 { return }
+            showFailure(L("Could not add to iPhone"),
+                        (error[NSAppleScript.errorMessage] as? String) ?? L("Reading the server's link failed."))
+            return
+        }
+        guard let link = result?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), link.hasPrefix("bx://") else {
+            showFailure(L("Could not add to iPhone"), L("Reading the server's link failed."))
+            return
+        }
+        showPhoneQRCode(link, attachedTo: nil)
     }
 
     private func runAppleScript(_ source: String) -> Bool {

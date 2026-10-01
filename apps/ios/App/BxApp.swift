@@ -86,7 +86,8 @@ struct MainView: View {
         let loaded = Result { try ExplainInputs.load(fixture: fixture, policy: tunnel.policyJSON) }
         let target = BxApp.value(after: "--target", in: args)
         TabView(selection: $tab) {
-            HomeView(tunnel: tunnel, deployRunner: deployRunner)
+            HomeView(tunnel: tunnel, deployRunner: deployRunner,
+                     scanSimulated: args.contains("--fixture") ? BxApp.value(after: "--fixture-scan", in: args) : nil)
                 .tabItem { Label("Protection", systemImage: "checkmark.shield") }
                 .tag(0)
             ExplainView(

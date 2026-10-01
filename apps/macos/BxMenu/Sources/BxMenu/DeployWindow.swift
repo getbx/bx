@@ -308,16 +308,8 @@ final class DeployWindowController: NSObject, NSWindowDelegate {
     /// **二维码就是凭据**:只在用户点这一下时画,旁边说清楚「看得到它的人都能用你的服务器」;
     /// 不存盘、不进剪贴板。
     @objc private func showPhoneCode() {
-        guard let link = phoneLink, let image = deployQRImage(link) else { return }
-        let alert = NSAlert()
-        alert.messageText = L("Scan with your iPhone's Camera")
-        alert.informativeText = L("Point the Camera at this code and tap the bx link that appears. The bx app on iPhone asks before adding the server. Anyone who can see this code can use your server — close it when you are done.")
-        let view = NSImageView(image: image)
-        view.frame = NSRect(x: 0, y: 0, width: 240, height: 240)
-        view.imageScaling = .scaleProportionallyUpOrDown
-        alert.accessoryView = view
-        alert.addButton(withTitle: L("Done"))
-        if let window { alert.beginSheetModal(for: window) } else { alert.runModal() }
+        guard let link = phoneLink else { return }
+        showPhoneQRCode(link, attachedTo: window)
     }
 
     // MARK: 渲染
@@ -413,4 +405,22 @@ func deployQRImage(_ text: String) -> NSImage? {
     let image = NSImage(size: rep.size)
     image.addRepresentation(rep)
     return image
+}
+
+/// 把一条链接画成二维码给 iPhone 扫(相机或 bx App 里的「Scan a code」;bx 会先确认、说出地址)。
+///
+/// **二维码就是凭据**:只在用户点那一下时画,旁边说清楚「看得到它的人都能用你的服务器」;
+/// 不存盘、不进剪贴板。部署窗口与 Servers 窗口的「Add to iPhone…」共用这一处。
+func showPhoneQRCode(_ link: String, attachedTo window: NSWindow?) {
+    guard let image = deployQRImage(link) else { return }
+    let alert = NSAlert()
+    alert.messageText = L("Scan with your iPhone's Camera")
+    alert.informativeText = L("Point the Camera at this code and tap the bx link that appears. The bx app on iPhone asks before adding the server. Anyone who can see this code can use your server — close it when you are done.")
+    let view = NSImageView(image: image)
+    view.frame = NSRect(x: 0, y: 0, width: 240, height: 240)
+    view.imageScaling = .scaleProportionallyUpOrDown
+    alert.accessoryView = view
+    alert.addButton(withTitle: L("Done"))
+    NSApp.activate(ignoringOtherApps: true)
+    if let window, window.isVisible { alert.beginSheetModal(for: window) } else { alert.runModal() }
 }

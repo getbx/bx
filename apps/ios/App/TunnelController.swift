@@ -37,6 +37,11 @@ final class TunnelController: ObservableObject {
     /// applied directly: the home screen asks first, naming the address — any web page can open a
     /// bx:// URL, and it must not be able to swap someone's server silently.
     @Published var incoming: IncomingLink?
+    /// The VPN-permission explainer was shown this run (so it is not shown twice in a row).
+    @Published var vpnExplained = false
+
+    /// No VPN configuration yet ⇒ the next turn-on triggers iPhone's "add VPN configurations" alert.
+    var needsVPNPermission: Bool { manager == nil && !vpnExplained }
 
     struct IncomingLink: Identifiable, Equatable {
         let id = UUID()
@@ -91,7 +96,7 @@ final class TunnelController: ObservableObject {
             incoming = IncomingLink(link: link, host: p.server_host, problem: nil)
         } else {
             incoming = IncomingLink(link: link, host: nil,
-                                    problem: "This link cannot be used on iPhone. bx on iPhone runs reality servers.")
+                                    problem: String(localized: "This link cannot be used on iPhone. bx on iPhone runs reality servers."))
         }
     }
 
@@ -119,7 +124,7 @@ final class TunnelController: ObservableObject {
         let json = BxkitConfigureWithPolicy(link, policyJSON, BundledLists.chinaDomain, BundledLists.chinaCIDR, &error)
         if let error {
             if error.localizedDescription.contains("no in-process sing-box outbound") {
-                throw DriverError("This server type is not supported on iPhone yet. bx on iPhone runs reality servers (vless:// links, or a bx:// link that contains one).")
+                throw DriverError(String(localized: "This server type is not supported on iPhone yet. bx on iPhone runs reality servers (vless:// links, or a bx:// link that contains one)."))
             }
             throw error
         }

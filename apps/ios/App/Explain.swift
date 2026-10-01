@@ -13,9 +13,9 @@ struct ExplainAnswer: Decodable, Equatable {
     // Same three words the Mac menu uses for its traffic groups.
     var verdictTitle: String {
         switch verdict {
-        case "tunnel": return "Through the tunnel"
-        case "direct": return "Direct"
-        case "blocked": return "Blocked"
+        case "tunnel": return String(localized: "Through the tunnel")
+        case "direct": return String(localized: "Direct")
+        case "blocked": return String(localized: "Blocked")
         default: return verdict
         }
     }

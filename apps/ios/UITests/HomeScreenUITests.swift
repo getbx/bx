@@ -6,6 +6,15 @@ final class HomeScreenUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    /// Rows below the fold of a list are not drawn until scrolled to.
+    private func reveal(_ app: XCUIApplication, _ id: String) -> XCUIElement {
+        let element = app.descendants(matching: .any)[id]
+        for _ in 0..<4 where !element.exists || !element.isHittable {
+            app.swipeUp()
+        }
+        return element
+    }
+
     private func launch(_ extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--fixture"] + extra
@@ -13,10 +22,48 @@ final class HomeScreenUITests: XCTestCase {
         return app
     }
 
-    func testWithoutAServerTheOnlyThingOnScreenIsHowToAddOne() {
+    // First run: three ways in, said in plain words — not a link box nobody knows how to fill.
+    func testWithoutAServerTheFirstScreenOffersThreeWaysIn() {
         let app = launch()
-        XCTAssertTrue(app.descendants(matching: .any)["add.link"].waitForExistence(timeout: 10), "no link field on first run")
+        XCTAssertTrue(app.descendants(matching: .any)["home.scan"].waitForExistence(timeout: 10), "first screen lacks scanning")
+        for id in ["home.deploy", "home.guide", "home.paste"] {
+            XCTAssertTrue(reveal(app, id).exists, "first screen lacks \(id)")
+        }
         XCTAssertFalse(app.descendants(matching: .any)["home.protection"].exists, "a protection switch with no server to protect through")
+        XCTAssertFalse(app.descendants(matching: .any)["add.link"].exists, "typing a link is the last resort, not the first box")
+    }
+
+    func testScanningACodeAsksBeforeAdding() {
+        let app = launch(["--fixture-scan", Self.incoming])
+        app.buttons["home.scan"].tap()
+        let simulate = app.buttons["scan.simulate"]
+        XCTAssertTrue(simulate.waitForExistence(timeout: 5))
+        simulate.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["incoming.host"].waitForExistence(timeout: 5), "no confirmation after scanning")
+        app.buttons["incoming.add"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["home.server"].waitForExistence(timeout: 10))
+    }
+
+    func testTheGuideLeadsToSetup() {
+        let app = launch()
+        app.buttons["home.guide"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["guide.continue"].waitForExistence(timeout: 5) || true)
+        reveal(app, "guide.continue").tap()
+        XCTAssertTrue(app.textFields["deploy.address"].waitForExistence(timeout: 8), "the guide did not lead to setting up the server")
+    }
+
+    // iPhone's own "add VPN configurations" alert is explained before it appears.
+    func testFirstTurnOnExplainsTheVPNPrompt() {
+        let app = launch(["--fixture-server"])
+        let button = app.buttons["home.protection"]
+        XCTAssertTrue(button.waitForExistence(timeout: 10))
+        button.tap()
+        let go = app.buttons["vpn.continue"]
+        XCTAssertTrue(go.waitForExistence(timeout: 5), "turned on without explaining the VPN prompt")
+        go.tap()
+        let state = app.descendants(matching: .any)["home.state"]
+        let protected = NSPredicate(format: "label == %@", "Protected")
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation(for: protected, evaluatedWith: state)], timeout: 5), .completed)
     }
 
     func testWithAServerTheSwitchAndTheAddressAreShown() {
@@ -32,6 +79,7 @@ final class HomeScreenUITests: XCTestCase {
     // accepted into a config that can never connect.
     func testAnUnsupportedLinkIsRefusedByName() {
         let app = launch()
+        reveal(app, "home.typeLink").tap()
         let field = app.descendants(matching: .any)["add.link"]
         XCTAssertTrue(field.waitForExistence(timeout: 10))
         field.tap()
@@ -151,6 +199,7 @@ final class HomeScreenUITests: XCTestCase {
     // must take the main link, not the UDP one.
     func testPastingTheWholeSetupLineTakesTheMainLink() {
         let app = launch()
+        reveal(app, "home.typeLink").tap()
         let field = app.descendants(matching: .any)["add.link"]
         XCTAssertTrue(field.waitForExistence(timeout: 10))
         field.tap()

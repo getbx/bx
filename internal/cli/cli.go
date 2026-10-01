@@ -137,6 +137,7 @@ func New() *cli.App {
 			{Name: "logs", Category: "Diagnose", Usage: "show the client log", Flags: logsFlags(), Action: logsAction},
 			reportsCommand(),
 			{Name: "link", Usage: "generate a bx:// link", ArgsUsage: "<internal-link>", Hidden: true, Action: linkAction},
+			phoneLinkCommand(),
 			{Name: "blink", Usage: "re-wrap an internal transport link as bx://", ArgsUsage: "<link> [link2 ...]", Hidden: true, Action: linkAction},
 			{Name: "darwin-plan", Usage: "print the macOS routing dry-run plan (changes nothing)", Hidden: true, Flags: darwinPlanFlags(), Action: darwinPlanAction},
 			{Name: "router-plan", Usage: "print the router-mode dry-run plan (ip + nft, changes nothing)", Hidden: true, Flags: routerPlanFlags(), Action: routerPlanAction},

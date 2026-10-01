@@ -47,7 +47,11 @@ targets:
         CFBundleDisplayName: bx
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleDevelopmentRegion: en
+        # 跟随系统语言:简体中文的 iPhone 上整个 App 是中文(App/zh-Hans.lproj)。
+        CFBundleLocalizations: [en, zh-Hans]
         UILaunchScreen: {}
+        NSCameraUsageDescription: bx uses the camera only to scan the code that adds your server.
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         # bx:// links open the app (the Mac's "Add to iPhone" QR, scanned with the Camera). The app
         # always asks before using one — see TunnelController.receive.

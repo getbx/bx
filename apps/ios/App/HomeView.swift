@@ -3,48 +3,23 @@ import SwiftUI
 struct HomeView: View {
     @ObservedObject var tunnel: TunnelController
     var deployRunner: PhoneDeployRunner = GoDeployRunner()
+    var scanSimulated: String?
     @State private var showingAdd = false
     @State private var showingDeploy = false
+    @State private var showingScan = false
+    @State private var showingGuide = false
+    @State private var showingType = false
+    @State private var showingVPNExplainer = false
 
     var body: some View {
         NavigationStack {
             Form {
                 if tunnel.state == .noServer {
-                    Section {
-                        VStack(spacing: 12) {
-                            Image("BrandMark")
-                                .resizable()
-                                .scaledToFit()
-                                .frame(height: 64)
-                                .accessibilityHidden(true)
-                            Text("Add your server")
-                                .font(.title2.weight(.semibold))
-                            Text("bx sends this iPhone's traffic through your own server, and China sites direct.")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                    }
-                    .listRowBackground(Color.clear)
-                    Section {
-                        Button {
-                            showingDeploy = true
-                        } label: {
-                            Label("Set Up My Server", systemImage: "server.rack")
-                        }
-                        .accessibilityIdentifier("home.deploy")
-                    } footer: {
-                        Text("Bought a server from a provider? Enter its address and password; bx installs everything.")
-                    }
-                    Section {
-                        AddServerForm(tunnel: tunnel, onDone: {})
-                    } header: {
-                        Text("Already have a link?")
-                    } footer: {
-                        Text("Paste the bx:// link your server gave you, or the whole line it printed. It is stored in this iPhone's Keychain and never leaves the device.")
-                    }
+                    WelcomeSections(tunnel: tunnel,
+                                    onScan: { showingScan = true },
+                                    onDeploy: { showingDeploy = true },
+                                    onGuide: { showingGuide = true },
+                                    onType: { showingType = true })
                 } else {
                     Section {
                         hero
@@ -78,6 +53,40 @@ struct HomeView: View {
                 IncomingLinkSheet(pending: pending, current: tunnel.serverHost,
                                   onAdd: { tunnel.acceptIncoming() },
                                   onCancel: { tunnel.incoming = nil })
+            }
+            .sheet(isPresented: $showingScan) {
+                ScanSheet(tunnel: tunnel, onClose: { showingScan = false }, simulated: scanSimulated)
+            }
+            .sheet(isPresented: $showingGuide) {
+                NavigationStack {
+                    NoServerGuide(onHaveOne: {
+                        showingGuide = false
+                        // One sheet at a time: let the guide finish closing before the form opens.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { showingDeploy = true }
+                    })
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { showingGuide = false } } }
+                }
+            }
+            .sheet(isPresented: $showingType) {
+                NavigationStack {
+                    Form {
+                        Section {
+                            AddServerForm(tunnel: tunnel, onDone: { showingType = false })
+                        } footer: {
+                            Text("Paste the bx:// link, or the whole line your server printed. It is stored in this iPhone's Keychain and never leaves the device.")
+                        }
+                    }
+                    .navigationTitle("Add a Link")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showingType = false } } }
+                }
+            }
+            .sheet(isPresented: $showingVPNExplainer) {
+                VPNPermissionExplainer(onContinue: {
+                    showingVPNExplainer = false
+                    tunnel.vpnExplained = true
+                    Task { await tunnel.setProtection(true) }
+                }, onCancel: { showingVPNExplainer = false })
             }
             .sheet(isPresented: $showingDeploy) {
                 NavigationStack {
@@ -125,6 +134,11 @@ struct HomeView: View {
 
     @ViewBuilder private var protectionButton: some View {
         let button = Button {
+            // The first time, say what iPhone is about to ask before it asks.
+            if !tunnel.isOn && tunnel.needsVPNPermission {
+                showingVPNExplainer = true
+                return
+            }
             Task { await tunnel.setProtection(!tunnel.isOn) }
         } label: {
             Text(buttonTitle).font(.headline).frame(maxWidth: .infinity)
@@ -164,35 +178,37 @@ struct HomeView: View {
 
     private var stateTitle: String {
         switch tunnel.state {
-        case .on: return "Protected"
-        case .connecting: return "Connecting…"
-        case .failed: return "Couldn't turn on"
-        case .off, .noServer: return "Not protected"
+        case .on: return String(localized: "Protected")
+        case .connecting: return String(localized: "Connecting…")
+        case .failed: return String(localized: "Couldn't turn on")
+        case .off, .noServer: return String(localized: "Not protected")
         }
     }
 
     private var stateDetail: String {
         switch tunnel.state {
-        case .on: return "Traffic goes through \(tunnel.serverHost ?? "your server")."
-        case .connecting: return "Nothing leaves this iPhone until the tunnel is up."
+        case .on:
+            guard let host = tunnel.serverHost else { return String(localized: "Traffic goes through your server.") }
+            return String(localized: "Traffic goes through \(host).")
+        case .connecting: return String(localized: "Nothing leaves this iPhone until the tunnel is up.")
         case let .failed(why): return why
-        case .off, .noServer: return "Apps connect directly, as if bx were not installed."
+        case .off, .noServer: return String(localized: "Apps connect directly, as if bx were not installed.")
         }
     }
 
     private var buttonTitle: String {
         switch tunnel.state {
-        case .on: return "Turn Off"
-        case .connecting: return "Connecting…"
-        case .failed: return "Try Again"
-        case .off, .noServer: return "Turn On Protection"
+        case .on: return String(localized: "Turn Off")
+        case .connecting: return String(localized: "Connecting…")
+        case .failed: return String(localized: "Try Again")
+        case .off, .noServer: return String(localized: "Turn On Protection")
         }
     }
 
     private var rulesTitle: String {
         switch tunnel.rules {
-        case .synced: return "From your Mac"
-        case .defaults: return "bx defaults"
+        case .synced: return String(localized: "From your Mac")
+        case .defaults: return String(localized: "bx defaults")
         }
     }
 
@@ -204,13 +220,13 @@ struct HomeView: View {
             } ?? ""
             return when.isEmpty ? "Synced through your server." : "Synced through your server, updated \(when)."
         case .defaults(.notCheckedYet):
-            return "China direct, everything else through the tunnel. Your Mac's rules are fetched once protection is on."
+            return String(localized: "China direct, everything else through the tunnel. Your Mac's rules are fetched once protection is on.")
         case .defaults(.notSyncedYet):
-            return "China direct, everything else through the tunnel. Your Mac has not synced its rules yet."
+            return String(localized: "China direct, everything else through the tunnel. Your Mac has not synced its rules yet.")
         case .defaults(.serverCannotSync):
-            return "China direct, everything else through the tunnel. Your server cannot sync rules yet — on the server run: sudo bx server enable-sync"
+            return String(localized: "China direct, everything else through the tunnel. Your server cannot sync rules yet — on the server run: sudo bx server enable-sync")
         case .defaults(.differentLink):
-            return "China direct, everything else through the tunnel. The rules on your server were synced with a different link, so they were ignored."
+            return String(localized: "China direct, everything else through the tunnel. The rules on your server were synced with a different link, so they were ignored.")
         }
     }
 }

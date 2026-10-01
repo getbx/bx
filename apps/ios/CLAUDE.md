@@ -52,6 +52,20 @@
   的 ATS 例外只给这个保留名(那条流量只在隧道里走,内容本身也封过)。
 - 真机上走屏幕同一条路径的无头场景:`scripts/ios-dev.sh run app`(导入 → 开 → 探测 → 关 → 忘掉)。
 
+## 首屏:给什么都不知道的人(2026-10-01,真机未验)
+
+所有者:「小白一开始都不知道怎么配置,填链接就非常难了,更别说分享还要粘贴。」首屏因此**不再是一个
+链接框**,而是「你想从哪里开始?」三条:**扫一扫**(App 内 VisionKit 扫 Mac「Add to iPhone」或朋友的码)、
+**我有服务器**(地址 + 密码,见下一节)、**我还没有服务器**(买什么、会拿到什么,末尾直接进安装)。
+别人发来的链接用系统 **PasteButton**(不弹「允许粘贴」);手输链接退到最后一行。
+- 第一次打开保护前先说一句 iPhone 会问 VPN、要点「允许」(`VPNPermissionExplainer`)——
+  那个系统弹窗是新手最常点「不允许」的地方。
+- **界面跟随系统语言**,简体中文在 `App/zh-Hans.lproj/Localizable.strings`。SwiftUI 字面量自动查表;
+  代码里拼出来的字串必须写成 `String(localized:)`;Explain 的「原因」来自 Go 的措辞表
+  (`explainwords.AllLabels`),按原句查表。`TestIOSEveryVisibleStringHasAChineseTranslation` 钉住
+  每一句都有译文、词表里没有陈旧条目。
+- 外面来的链接(扫码、粘贴、bx:// 打开)全都走 `TunnelController.receive` 那张说出地址的确认单。
+
 ## 手机先装:在 App 里装好服务器(2026-09-30,真机未验)
 
 没有 Mac、第一个 bx 就是手机的人:首屏「Set Up My Server」填服务商给的地址 / SSH 端口 / 登录名 / 密码,

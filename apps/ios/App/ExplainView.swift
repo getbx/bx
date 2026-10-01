@@ -42,7 +42,10 @@ struct ExplainView: View {
                         .font(.headline)
                         .accessibilityElement(children: .combine)
                         .accessibilityIdentifier("explain.goes")
-                        LabeledContent("Because", value: answer.because)
+                        // The reason comes from Go's shared wording table; on a Chinese iPhone it is looked
+                        // up in Localizable.strings (TestIOSEveryVisibleStringHasAChineseTranslation
+                        // checks every phrase of that table has a translation).
+                        LabeledContent("Because", value: Bundle.main.localizedString(forKey: answer.because, value: answer.because, table: nil))
                             .accessibilityIdentifier("explain.because")
                         if let rule = answer.rule, !rule.isEmpty {
                             LabeledContent("Rule", value: rule)

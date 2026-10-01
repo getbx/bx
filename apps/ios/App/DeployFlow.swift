@@ -24,11 +24,11 @@ let phoneDeploySteps = ["connect", "download", "install", "firewall", "start"]
 
 func phoneDeployStepTitle(_ id: String) -> String {
     switch id {
-    case "connect": return "Connect to the server"
-    case "download": return "Download bx onto the server"
-    case "install": return "Install the bx server"
-    case "firewall": return "Open the port in the server's firewall"
-    case "start": return "Start it"
+    case "connect": return String(localized: "Connect to the server")
+    case "download": return String(localized: "Download bx onto the server")
+    case "install": return String(localized: "Install the bx server")
+    case "firewall": return String(localized: "Open the port in the server's firewall")
+    case "start": return String(localized: "Start it")
     default: return id
     }
 }
@@ -45,36 +45,36 @@ struct PhoneDeployFailure: Equatable {
 func phoneDeployFailure(_ code: String) -> PhoneDeployFailure {
     switch code {
     case "unreachable":
-        return .init(headline: "Could not reach the server",
-                     advice: "Check the address and the SSH port, and that the server is running. A new server can take a few minutes to come up.")
+        return .init(headline: String(localized: "Could not reach the server"),
+                     advice: String(localized: "Check the address and the SSH port, and that the server is running. A new server can take a few minutes to come up."))
     case "auth_failed":
-        return .init(headline: "The login was not accepted",
-                     advice: "Check the login name and the password. Your provider shows both in its console, usually under the server's details.")
+        return .init(headline: String(localized: "The login was not accepted"),
+                     advice: String(localized: "Check the login name and the password. Your provider shows both in its console, usually under the server's details."))
     case "host_key_changed":
-        return .init(headline: "This server's identity changed",
-                     advice: "That is expected if you reinstalled the server. If you did not, someone may be in between — do not continue.",
+        return .init(headline: String(localized: "This server's identity changed"),
+                     advice: String(localized: "That is expected if you reinstalled the server. If you did not, someone may be in between — do not continue."),
                      retry: .forgetHostKey)
     case "already_installed":
-        return .init(headline: "bx on this server could not be used as it is",
-                     advice: "Reinstalling creates new keys: links you shared from this server stop working.",
+        return .init(headline: String(localized: "bx on this server could not be used as it is"),
+                     advice: String(localized: "Reinstalling creates new keys: links you shared from this server stop working."),
                      retry: .reinstall)
     case "port_in_use":
-        return .init(headline: "The port bx needs is already used on this server",
-                     advice: "Another program on the server uses it (see the details) — bx did not change anything. Stop that program, or use a server with nothing else on it.")
+        return .init(headline: String(localized: "The port bx needs is already used on this server"),
+                     advice: String(localized: "Another program on the server uses it (see the details) — bx did not change anything. Stop that program, or use a server with nothing else on it."))
     case "password_change_required":
-        return .init(headline: "The server wants a new password first",
-                     advice: "Log in once from your provider's web console, set a new password, then try again with it.")
+        return .init(headline: String(localized: "The server wants a new password first"),
+                     advice: String(localized: "Log in once from your provider's web console, set a new password, then try again with it."))
     case "sudo_password":
-        return .init(headline: "This login needs a password for administrator rights",
-                     advice: "Enter the login's password, or log in as root.")
+        return .init(headline: String(localized: "This login needs a password for administrator rights"),
+                     advice: String(localized: "Enter the login's password, or log in as root."))
     case "unsupported_system":
-        return .init(headline: "This server's system is not supported",
-                     advice: "bx needs 64-bit Linux with systemd (x86_64 or ARM), such as Ubuntu or Debian.")
+        return .init(headline: String(localized: "This server's system is not supported"),
+                     advice: String(localized: "bx needs 64-bit Linux with systemd (x86_64 or ARM), such as Ubuntu or Debian."))
     case "checksum":
-        return .init(headline: "The download did not match its signature",
-                     advice: "Nothing was installed. Try again later.")
+        return .init(headline: String(localized: "The download did not match its signature"),
+                     advice: String(localized: "Nothing was installed. Try again later."))
     default:
-        return .init(headline: "Installation failed", advice: "See the details below.")
+        return .init(headline: String(localized: "Installation failed"), advice: String(localized: "See the details below."))
     }
 }
 

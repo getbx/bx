@@ -609,7 +609,7 @@ func TestMacMenuServersWindowKeepsTheButtonsWhenTheListIsEmpty(t *testing.T) {
 		buttons   []string
 	}{
 		{"checkBar()", "private func checkBar() -> NSView", []string{"test", "check"}},
-		{"addBar()", "private func addBar() -> NSView", []string{"add", "deploy"}},
+		{"addBar()", "private func addBar() -> NSView", []string{"add", "deploy", "phone"}},
 	} {
 		at := -1
 		for _, callee := range viewPlacementCallees {

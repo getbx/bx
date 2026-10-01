@@ -24,6 +24,8 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
     var onProbe: (() -> Void)?
     /// 用户点了「Set Up a New Server…」(从一级菜单搬进来的「Set Up a New Server…」)。
     var onDeploy: (() -> Void)?
+    /// 「Add to iPhone…」:给 iPhone 相机 / bx App 扫的二维码(当前这台)。
+    var onAddToPhone: (() -> Void)?
     /// 用户点了「Add an Existing Server…」—— 贴一条链接加进清单并切换过去(spec §4)。
     var onAddServer: (() -> Void)?
     /// `⋯` 里的删除。参数是名字、出口主机、以及**这一台此刻在不在承载流量**
@@ -237,7 +239,9 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
         add.toolTip = L("Paste a bx link to add a server and switch to it. Your current server stays in the list.")
         let deploy = menuButton(L("Set Up a New Server…"), target: self, action: #selector(deployServer))
         deploy.toolTip = L("Installs bx on a fresh server over SSH.")
-        return menuButtonRow([add, deploy])
+        let phone = menuButton(L("Add to iPhone…"), target: self, action: #selector(addToPhone))
+        phone.toolTip = L("Shows a code to scan with bx on your iPhone, for the server this Mac is using.")
+        return menuButtonRow([add, deploy, phone])
     }
 
     private func gap() -> NSView {
@@ -500,6 +504,10 @@ final class ServersWindowController: NSObject, NSWindowDelegate {
 
     @objc private func deployServer() {
         onDeploy?()
+    }
+
+    @objc private func addToPhone() {
+        onAddToPhone?()
     }
 
     @objc private func addServer() {
