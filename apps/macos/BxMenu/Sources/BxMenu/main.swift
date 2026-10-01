@@ -1930,8 +1930,8 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// QUIC 那半**,而界面上什么都看不出来。
     ///
     /// 「留空」是什么意思由 `udpFieldHint(replacing:)` 说,两条路不一样:add 是
-    /// 「这台没有 UDP 链接」,replace 是「保持它原来那条」—— 菜单今天清不掉一条
-    /// UDP 链接,把它写成「留空 = 删掉」就是一句后果静默的假话。
+    /// 「这台没有 UDP 链接」,replace 是「保持它原来那条」。要去掉 UDP 链接走单独的勾选框
+    /// (`offersClearUDP`),不是「留空」—— 把留空写成「删掉」是一句后果静默的假话。
     private func promptForServerLinks(
         title: String, hint: String, confirmTitle: String, udpHint: String, offersClearUDP: Bool
     ) -> (link: String, udp: String, clearUDP: Bool)? {
@@ -3245,8 +3245,10 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateInFlight = Date()
         updateLogPath = logPath
         rebuildMenu()
+        let script = "do shell script \(shellQuoted(command)) with administrator privileges"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            _ = self?.runPrivileged(command)
+            // osascript 子进程,不是 runPrivileged:那条走 NSAppleScript,不是线程安全的。
+            _ = self?.runPrivilegedScriptOffMainThread(script)
             // bx exits non-zero on rollback but still prints valid JSON; always inspect the log.
             let logData = FileManager.default.contents(atPath: logPath)
             DispatchQueue.main.async {
@@ -3367,19 +3369,29 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 为止,放在主线程就是 2026-08-04 那种「菜单冻住」的复刻)。改 spawn
     /// `/usr/bin/osascript` 子进程——独立进程,天然线程安全,授权框由系统
     /// SecurityAgent 弹。
-    private func runPrivilegedScriptOffMainThread(_ script: String) -> Bool {
+    ///
+    /// 返回值带上脚本的输出与「用户点了取消」(-128),给需要读结果的调用方(Add to iPhone)。
+    private func runPrivilegedScriptOffMainThread(_ script: String) -> PrivilegedScriptResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", script]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        let out = Pipe(), err = Pipe()
+        process.standardOutput = out
+        process.standardError = err
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
-            return false
+            return PrivilegedScriptResult(ok: false, canceled: false, output: "", error: "")
         }
-        return process.terminationStatus == 0
+        let output = out.fileHandleForReading.readDataToEndOfFile()
+        let errors = err.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let errorText = String(decoding: errors, as: UTF8.self)
+        return PrivilegedScriptResult(
+            ok: process.terminationStatus == 0,
+            canceled: errorText.contains("(-128)"),
+            output: String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines),
+            error: errorText.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     /// Quit 的收尾。关不掉就**不退出** —— 见 quitTerminatesAfterTurnOff。
@@ -3460,7 +3472,7 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if toggleEscape(action: action, socketSucceeded: succeeded) == .privilegedCLIDown {
                 escape = self.runPrivilegedScriptOffMainThread(
                     privilegedTurnOffScript(bxPath: self.bxPath)
-                ) ? .succeeded : .failed
+                ).ok ? .succeeded : .failed
                 if escape == .succeeded {
                     succeeded = true
                     // 特权 CLI `bx down` 走的是强制拆除:它经 Core 自己的控制 socket
@@ -3538,24 +3550,25 @@ final class BxMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 「Add to iPhone…」(Servers 窗口):当前这台的链接画成二维码。
     ///
-    /// 链接在 root-only 的配置里,所以经一次**管理员授权**(与首次设置同一条 AppleScript 路)让
-    /// `bx phone-link` 读出来 —— 不新开任何读它的口子(Guardian 从不发链接)。只进内存、只画成码。
+    /// 链接在 root-only 的配置里,所以经一次**管理员授权**让 `bx phone-link` 读出来 —— 不新开任何
+    /// 读它的口子(Guardian 从不发链接)。只进内存、只画成码。授权框会等用户输密码,所以走后台的
+    /// osascript 子进程,不占主线程。
     private func showCurrentServerForPhone() {
-        let source = "do shell script \(shellQuoted("'\(bxPath)' phone-link")) with administrator privileges"
-        var error: NSDictionary?
-        let result = NSAppleScript(source: source)?.executeAndReturnError(&error)
-        if let error {
-            // 用户点了取消就什么都不说;别的失败(比如当前是 brook 服务器)如实说。
-            if (error[NSAppleScript.errorNumber] as? Int) == -128 { return }
-            showFailure(L("Could not add to iPhone"),
-                        (error[NSAppleScript.errorMessage] as? String) ?? L("Reading the server's link failed."))
-            return
+        let script = "do shell script \(shellQuoted("'\(bxPath)' phone-link")) with administrator privileges"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let result = self.runPrivilegedScriptOffMainThread(script)
+            DispatchQueue.main.async {
+                if result.canceled { return } // 用户点了取消:什么都不说
+                guard result.ok, result.output.hasPrefix("bx://") else {
+                    // 比如当前是 iPhone 跑不了的服务器类型:bx phone-link 的原话就是原因。
+                    let why = phoneLinkFailureText(result.error)
+                    self.showFailure(L("Could not add to iPhone"), why.isEmpty ? L("Reading the server's link failed.") : why)
+                    return
+                }
+                showPhoneQRCode(result.output, attachedTo: nil)
+            }
         }
-        guard let link = result?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), link.hasPrefix("bx://") else {
-            showFailure(L("Could not add to iPhone"), L("Reading the server's link failed."))
-            return
-        }
-        showPhoneQRCode(link, attachedTo: nil)
     }
 
     private func runAppleScript(_ source: String) -> Bool {
@@ -3955,3 +3968,20 @@ let bxApplication = NSApplication.shared
 bxApplication.delegate = bxMenuDelegate
 bxApplication.setActivationPolicy(.accessory)
 bxApplication.run()
+
+/// The off-main-thread privileged runner's outcome (osascript subprocess).
+struct PrivilegedScriptResult {
+    let ok: Bool
+    let canceled: Bool
+    let output: String
+    let error: String
+}
+
+/// osascript wraps a failed `do shell script` as "…: execution error: <what bx printed> (1)". Keep
+/// what bx printed; it already names the reason in plain words.
+func phoneLinkFailureText(_ stderr: String) -> String {
+    var text = stderr
+    if let r = text.range(of: "execution error: ") { text = String(text[r.upperBound...]) }
+    if let r = text.range(of: #" \(-?\d+\)$"#, options: .regularExpression) { text.removeSubrange(r) }
+    return text.trimmingCharacters(in: .whitespacesAndNewlines)
+}

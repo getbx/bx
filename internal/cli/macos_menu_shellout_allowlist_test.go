@@ -11,13 +11,16 @@ import (
 // 旧 Guardian 上的降级路),与必须走终端归档的(Export Diagnostics)。加进来可以,
 // 悄悄加不行 —— 与 destPublicationAllowlist(§ appattr 发布面)同款:每一条写理由。
 var menuShellOutAllowlist = map[string]string{
-	"beginSetup":           "首次 setup 要写 /etc/bx 与装 unit,Guardian 还不存在",
-	"runEmbeddedInstaller": "install / repair 要换掉 Guardian 自己",
-	"uninstallBx":          "卸载要停掉并删掉 Guardian",
-	"updateBx":             "更新要停掉 Guardian 换二进制",
-	"exportDiagnostics":    "诊断包归档写用户目录并 chown,一年一次,走终端(spec §1)",
-	"performToggle":        "Turn Off 的逃生口:Guardian 死了也要能关掉保护(2026-08-04 那 71 分钟)",
-	"replaceConfiguration": "旧 Guardian(没有 servers 能力)的降级路;新 Guardian 上菜单不画它,改用 Add Server",
+	"beginSetup":                "首次 setup 要写 /etc/bx 与装 unit,Guardian 还不存在",
+	"runEmbeddedInstaller":      "install / repair 要换掉 Guardian 自己",
+	"uninstallBx":               "卸载要停掉并删掉 Guardian",
+	"updateBx":                  "更新要停掉 Guardian 换二进制",
+	"exportDiagnostics":         "诊断包归档写用户目录并 chown,一年一次,走终端(spec §1)",
+	"performToggle":             "Turn Off 的逃生口:Guardian 死了也要能关掉保护(2026-08-04 那 71 分钟)",
+	"replaceConfiguration":      "旧 Guardian(没有 servers 能力)的降级路;新 Guardian 上菜单不画它,改用 Add Server",
+	"showCurrentServerForPhone": "Add to iPhone:链接在 root-only 的配置里,读它要一次授权;Guardian 刻意从不发链接",
+	// 执行器本身(定义处带着 NSAppleScript 字样),不是动作。
+	"runAppleScript": "执行器:NSAppleScript",
 }
 
 // TestMacMenuShellOutsStayOnTheAllowlist 钉住:main.swift 里 `runPrivileged(`、
@@ -38,7 +41,9 @@ func TestMacMenuShellOutsStayOnTheAllowlist(t *testing.T) {
 
 	var offenders []string
 	seen := map[string]bool{}
-	for _, needle := range []string{"runPrivileged(", "openTerminal(", "runPrivilegedScriptOffMainThread("} {
+	// 后两个是 2026-10-01 补的:Add to iPhone 直接 NSAppleScript + administrator privileges,
+	// 绕过了前三个字样,这条守卫照样绿着(第五种失效写法)。
+	for _, needle := range []string{"runPrivileged(", "openTerminal(", "runPrivilegedScriptOffMainThread(", "NSAppleScript(", "with administrator privileges"} {
 		from := 0
 		for {
 			i := strings.Index(code[from:], needle)

@@ -139,8 +139,6 @@ let zhHansTranslations: [String: String] = [
     "The update was rolled back. Your previous version is running.": "更新已回滚。现在运行的仍是之前的版本。",
     "The update was rolled back: the new version could not reach your server — that points at the server or the path to it, not the update. Your previous version is running. Try again later.": "更新已回滚:新版本连不上你的服务器 —— 问题在服务器或去往它的线路,不在更新本身。现在运行的仍是之前的版本,稍后再试。",
     "The update was rolled back: the new version could not start on this Mac. Your previous version is running.": "更新已回滚:新版本在这台 Mac 上起不来。现在运行的仍是之前的版本。",
-    "Version: {0}": "版本：{0}",
-    "Version: {0} → {1} available": "版本：{0} → 有新版 {1}",
     "Installing… the network pauses for a few seconds ({0}s)": "正在安装… 网络会中断几秒（{0} 秒）",
     "Downloading — {0}": "正在下载 —— {0}",
     "Downloading… {0}s": "正在下载… {0} 秒",

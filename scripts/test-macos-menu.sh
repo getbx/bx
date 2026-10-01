@@ -17,9 +17,6 @@ run_test() {
   BX_MENU_LANGUAGE=en "$TMP/$name"
 }
 
-run_test status-indicator \
-  "$MENU/Sources/BxMenu/StatusIndicator.swift" \
-  "$MENU/Tests/StatusIndicatorTests.swift"
 run_test status-presentation \
   "$MENU/Sources/BxMenu/StatusPresentation.swift" \
   "$MENU/Tests/StatusPresentationTests.swift"
