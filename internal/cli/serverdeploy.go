@@ -120,20 +120,26 @@ func remoteInstallCommand(opts deployOptions) string {
 // **两条都要**:远端同时给了 reality(TCP)与 hysteria2(UDP),漏掉第二条会让
 // UDP 退回主传输,白白丢掉那条 QUIC 加速。
 func clientLinksFromInstallOutput(out string) (main, udp string, err error) {
-	var links []string
-	for _, field := range strings.Fields(out) {
-		field = strings.Trim(field, "'\"`")
-		if strings.HasPrefix(field, "bx://") {
-			links = append(links, field)
+	// **按 `--udp` 认,不按位置认。** 现在打印的是 flag 在前(`--udp 'UDP' 'MAIN'`),以前是
+	// 链接在前(`'MAIN' --udp 'UDP'`);按位置取「第一条 = 主链接」在新格式下把两条对调了。
+	fields := strings.Fields(out)
+	for i := 0; i < len(fields); i++ {
+		field := strings.Trim(fields[i], "'\"`")
+		if field == "--udp" && i+1 < len(fields) {
+			if next := strings.Trim(fields[i+1], "'\"`"); strings.HasPrefix(next, "bx://") {
+				udp = next
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(field, "bx://") && main == "" {
+			main = field
 		}
 	}
-	if len(links) == 0 {
+	if main == "" {
 		return "", "", fmt.Errorf("the remote host did not produce a bx:// client link; what it said was:\n%s", strings.TrimSpace(out))
 	}
-	if len(links) > 1 {
-		return links[0], links[1], nil
-	}
-	return links[0], "", nil
+	return main, udp, nil
 }
 
 // runServerDeploy 执行一次部署。

@@ -80,6 +80,23 @@ func TestClientLinksFromRealInstallOutput(t *testing.T) {
 }
 
 // 只有一条链接时 UDP 为空,不许把主链接复制一份当 UDP。
+// **样本由真正打印它的那个函数生成,不再手抄。** 上面那份手抄样本是「链接在前、--udp 在后」,
+// 而 2026-08-14 起 setupCommandLine 改成了 flag 在前(`bx setup` 自己就是这么要求的)——
+// 解析器照旧按位置取「第一条 = 主链接」,于是此后每一次部署都把 hysteria2 记成了主链接、
+// reality 记成了 UDP(Mac 上碰巧照样能连,所以没人发现;手机只认 reality,「Add to iPhone」
+// 那张二维码会被拒)。手抄的样本与真输出漂开,守卫就在最需要它的时候失明。
+func TestClientLinksFromWhatInstallActuallyPrints(t *testing.T) {
+	out := "🔀 reality … are ready:\n  " + setupCommandLine("bx://MAIN", "bx://UDP") + "\n"
+	main, udp, err := clientLinksFromInstallOutput(out)
+	if err != nil || main != "bx://MAIN" || udp != "bx://UDP" {
+		t.Fatalf("from %q: main=%q udp=%q err=%v", out, main, udp, err)
+	}
+	only := setupCommand("bx://ONLY", "")
+	if main, udp, err := clientLinksFromInstallOutput(only); err != nil || main != "bx://ONLY" || udp != "" {
+		t.Fatalf("from %q: main=%q udp=%q err=%v", only, main, udp, err)
+	}
+}
+
 func TestClientLinksWithoutUDP(t *testing.T) {
 	main, udp, err := clientLinksFromInstallOutput("  " + elevate.Prefix + "bx setup 'bx://ONLY'")
 	if err != nil || main != "bx://ONLY" {
