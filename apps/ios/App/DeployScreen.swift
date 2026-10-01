@@ -59,8 +59,8 @@ struct DeployScreen: View {
             if let finished {
                 Section {
                     Text(finished.reused
-                         ? String(localized: "This server already ran bx, so its keys were kept — links you shared from it keep working. It is saved on this iPhone.")
-                         : String(localized: "bx is installed on \(finished.host) and saved on this iPhone. Turn on protection when you are ready."))
+                         ? String(localized: "This server already ran bx, so its keys were kept — links you shared from it keep working. It is saved on this iPhone.", bundle: .bx)
+                         : String(localized: "bx is installed on \(finished.host) and saved on this iPhone. Turn on protection when you are ready.", bundle: .bx))
                         .accessibilityIdentifier("deploy.result")
                 } header: { Text("Ready") }
             }
@@ -78,11 +78,11 @@ struct DeployScreen: View {
                 if finished != nil {
                     Button("Done", action: onDone).accessibilityIdentifier("deploy.done")
                 } else if let retry = failure?.retry {
-                    Button(retry == .reinstall ? String(localized: "Reinstall (new keys)") : String(localized: "I Reinstalled It")) {
+                    Button(retry == .reinstall ? String(localized: "Reinstall (new keys)", bundle: .bx) : String(localized: "I Reinstalled It", bundle: .bx)) {
                         start(reinstall: retry == .reinstall, forgetHostKey: retry == .forgetHostKey)
                     }
                 } else {
-                    Button(running ? String(localized: "Setting Up…") : (failure == nil ? String(localized: "Set Up Server") : String(localized: "Try Again"))) { start() }
+                    Button(running ? String(localized: "Setting Up…", bundle: .bx) : (failure == nil ? String(localized: "Set Up Server", bundle: .bx) : String(localized: "Try Again", bundle: .bx))) { start() }
                         .disabled(running || address.trimmingCharacters(in: .whitespaces).isEmpty || password.isEmpty)
                         .accessibilityIdentifier("deploy.start")
                 }
@@ -138,7 +138,7 @@ struct DeployScreen: View {
                 try tunnel.importLink(link)
                 finished = (e.host ?? tunnel.serverHost ?? "", e.reused ?? false)
             } catch {
-                failure = PhoneDeployFailure(headline: String(localized: "The server is ready, but this iPhone cannot use it"),
+                failure = PhoneDeployFailure(headline: String(localized: "The server is ready, but this iPhone cannot use it", bundle: .bx),
                                              advice: error.localizedDescription)
             }
         case "error":

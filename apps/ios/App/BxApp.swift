@@ -51,12 +51,14 @@ struct HeadlessView: View {
 struct MainView: View {
     let args: [String]
     @StateObject private var tunnel: TunnelController
+    @StateObject private var language: LanguageSettings
     @State private var tab: Int
 
     init(args: [String]) {
         self.args = args
         let fixture = args.contains("--fixture")
         let controller = TunnelController(fixture: fixture)
+        _language = StateObject(wrappedValue: LanguageSettings(persist: !fixture))
         if fixture, args.contains("--fixture-server") {
             try? controller.importLink(FixtureLinks.reality)
         }
@@ -119,6 +121,10 @@ struct MainView: View {
             tunnel.receive(link: url.absoluteString)
             tab = 0
         }
+        // A language switch rebuilds every screen with the new table, at once.
+        .environment(\.locale, language.language.locale)
+        .environmentObject(language)
+        .id(language.language)
     }
 }
 

@@ -1,0 +1,2 @@
+/* English is the source language: the keys are the English sentences. This table is empty on
+   purpose; it exists so the in-app language switch has an English bundle to look in. */

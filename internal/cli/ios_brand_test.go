@@ -196,7 +196,7 @@ func TestIOSDeployPasswordIsNeverStored(t *testing.T) {
 // 必须写成 String(localized: "…") 才会查表 —— 两种都在这里被扫到。
 func TestIOSEveryVisibleStringHasAChineseTranslation(t *testing.T) {
 	root := filepath.Join("..", "..", "apps", "ios")
-	call := regexp.MustCompile(`\b(?:Text|Button|Label|LabeledContent|navigationTitle|TextField|SecureField|ContentUnavailableView|DisclosureGroup|Toggle|Section|confirmationDialog|String\(localized:)\s*\(?\s*"((?:[^"\\]|\\.)*)"`)
+	call := regexp.MustCompile(`\b(?:Text|Button|Label|LabeledContent|navigationTitle|TextField|SecureField|ContentUnavailableView|DisclosureGroup|Toggle|Section|confirmationDialog|Picker|String\(localized:)\s*\(?\s*"((?:[^"\\]|\\.)*)"`)
 	choice := regexp.MustCompile(`choice\("[^"]+",\s*"((?:[^"\\]|\\.)*)",\s*\n?\s*"((?:[^"\\]|\\.)*)"`)
 	notUI := regexp.MustCompile(`^(bx://|vless://|[a-z]+\.[a-z.]+$|BrandMark$|203\.0\.113\.9$|22$|root$|Simulated scan$)`)
 	letters := regexp.MustCompile(`[A-Za-z]{2}`)
@@ -256,5 +256,32 @@ func TestIOSEveryVisibleStringHasAChineseTranslation(t *testing.T) {
 		if _, ok := used[k]; !ok {
 			t.Errorf("Localizable.strings has %q, which no screen uses any more", k)
 		}
+	}
+}
+
+// The in-app language switch (App/Language.swift) reaches SwiftUI's Text literals through
+// Bundle.main, but String(localized:) bypasses that: without `bundle: .bx` a string stays in the old
+// language after a switch — on the simulator, the button and status line did exactly that.
+func TestIOSLocalizedStringsUseTheChosenLanguage(t *testing.T) {
+	files, _ := filepath.Glob(filepath.Join("..", "..", "apps", "ios", "App", "*.swift"))
+	if len(files) == 0 {
+		t.Fatal("no app sources found — the guard no longer reads them")
+	}
+	call := regexp.MustCompile(`String\(localized: "(?:[^"\\]|\\.)*"([^)]*)\)`)
+	seen := 0
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range call.FindAllStringSubmatch(string(raw), -1) {
+			seen++
+			if !strings.Contains(m[1], "bundle: .bx") {
+				t.Errorf("%s: %s does not pass bundle: .bx — it will not follow the in-app language switch", filepath.Base(f), m[0])
+			}
+		}
+	}
+	if seen < 20 {
+		t.Fatalf("only %d String(localized:) calls found — the guard no longer matches the sources", seen)
 	}
 }

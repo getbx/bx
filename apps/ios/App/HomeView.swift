@@ -67,7 +67,10 @@ struct HomeView: View {
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .principal) { BrandTitle() } }
+            .toolbar {
+                ToolbarItem(placement: .principal) { BrandTitle() }
+                ToolbarItem(placement: .topBarTrailing) { LanguageMenu() }
+            }
             .sheet(item: $tunnel.incoming) { pending in
                 IncomingLinkSheet(pending: pending, current: tunnel.serverHost,
                                   onAdd: { tunnel.acceptIncoming() },
@@ -205,37 +208,37 @@ struct HomeView: View {
 
     private var stateTitle: String {
         switch tunnel.state {
-        case .on: return String(localized: "Protected")
-        case .connecting: return String(localized: "Connecting…")
-        case .failed: return String(localized: "Couldn't turn on")
-        case .off, .noServer: return String(localized: "Not protected")
+        case .on: return String(localized: "Protected", bundle: .bx)
+        case .connecting: return String(localized: "Connecting…", bundle: .bx)
+        case .failed: return String(localized: "Couldn't turn on", bundle: .bx)
+        case .off, .noServer: return String(localized: "Not protected", bundle: .bx)
         }
     }
 
     private var stateDetail: String {
         switch tunnel.state {
         case .on:
-            guard let host = tunnel.serverHost else { return String(localized: "Traffic goes through your server.") }
-            return String(localized: "Traffic goes through \(host).")
-        case .connecting: return String(localized: "Nothing leaves this iPhone until the tunnel is up.")
+            guard let host = tunnel.serverHost else { return String(localized: "Traffic goes through your server.", bundle: .bx) }
+            return String(localized: "Traffic goes through \(host).", bundle: .bx)
+        case .connecting: return String(localized: "Nothing leaves this iPhone until the tunnel is up.", bundle: .bx)
         case let .failed(why): return why
-        case .off, .noServer: return String(localized: "Apps connect directly, as if bx were not installed.")
+        case .off, .noServer: return String(localized: "Apps connect directly, as if bx were not installed.", bundle: .bx)
         }
     }
 
     private var buttonTitle: String {
         switch tunnel.state {
-        case .on: return String(localized: "Turn Off")
-        case .connecting: return String(localized: "Connecting…")
-        case .failed: return String(localized: "Try Again")
-        case .off, .noServer: return String(localized: "Turn On Protection")
+        case .on: return String(localized: "Turn Off", bundle: .bx)
+        case .connecting: return String(localized: "Connecting…", bundle: .bx)
+        case .failed: return String(localized: "Try Again", bundle: .bx)
+        case .off, .noServer: return String(localized: "Turn On Protection", bundle: .bx)
         }
     }
 
     private var rulesTitle: String {
         switch tunnel.rules {
-        case .synced: return String(localized: "From your Mac")
-        case .defaults: return String(localized: "bx defaults")
+        case .synced: return String(localized: "From your Mac", bundle: .bx)
+        case .defaults: return String(localized: "bx defaults", bundle: .bx)
         }
     }
 
@@ -247,13 +250,13 @@ struct HomeView: View {
             } ?? ""
             return when.isEmpty ? "Synced through your server." : "Synced through your server, updated \(when)."
         case .defaults(.notCheckedYet):
-            return String(localized: "China direct, everything else through the tunnel. Your Mac's rules are fetched once protection is on.")
+            return String(localized: "China direct, everything else through the tunnel. Your Mac's rules are fetched once protection is on.", bundle: .bx)
         case .defaults(.notSyncedYet):
-            return String(localized: "China direct, everything else through the tunnel. Your Mac has not synced its rules yet.")
+            return String(localized: "China direct, everything else through the tunnel. Your Mac has not synced its rules yet.", bundle: .bx)
         case .defaults(.serverCannotSync):
-            return String(localized: "China direct, everything else through the tunnel. Your server cannot sync rules yet — on the server run: sudo bx server enable-sync")
+            return String(localized: "China direct, everything else through the tunnel. Your server cannot sync rules yet — on the server run: sudo bx server enable-sync", bundle: .bx)
         case .defaults(.differentLink):
-            return String(localized: "China direct, everything else through the tunnel. The rules on your server were synced with a different link, so they were ignored.")
+            return String(localized: "China direct, everything else through the tunnel. The rules on your server were synced with a different link, so they were ignored.", bundle: .bx)
         }
     }
 }

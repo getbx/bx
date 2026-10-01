@@ -55,13 +55,13 @@ enum TailscalePhase: Equatable {
     /// The one-word value on the home screen's row.
     var summary: String {
         switch self {
-        case .off: return String(localized: "Off")
-        case .needsProtection: return String(localized: "Waiting for protection")
-        case .starting: return String(localized: "Connecting…")
-        case .signIn: return String(localized: "Sign-in needed")
-        case .awaitingApproval: return String(localized: "Waiting for approval")
-        case .connected: return String(localized: "Connected")
-        case .notConnected: return String(localized: "Not connected")
+        case .off: return String(localized: "Off", bundle: .bx)
+        case .needsProtection: return String(localized: "Waiting for protection", bundle: .bx)
+        case .starting: return String(localized: "Connecting…", bundle: .bx)
+        case .signIn: return String(localized: "Sign-in needed", bundle: .bx)
+        case .awaitingApproval: return String(localized: "Waiting for approval", bundle: .bx)
+        case .connected: return String(localized: "Connected", bundle: .bx)
+        case .notConnected: return String(localized: "Not connected", bundle: .bx)
         }
     }
 }
@@ -122,7 +122,7 @@ struct TailscaleScreen: View {
                     }
                     ForEach(peers, id: \.self) { peer in
                         LabeledContent(peer.name) {
-                            Label(peer.online ? String(localized: "Online") : String(localized: "Offline"), systemImage: "circle.fill")
+                            Label(peer.online ? String(localized: "Online", bundle: .bx) : String(localized: "Offline", bundle: .bx), systemImage: "circle.fill")
                                 .labelStyle(.titleAndIcon)
                                 .foregroundStyle(peer.online ? .green : .secondary)
                         }

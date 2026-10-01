@@ -102,7 +102,7 @@ final class TunnelController: ObservableObject {
             incoming = IncomingLink(link: link, host: p.server_host, problem: nil)
         } else {
             incoming = IncomingLink(link: link, host: nil,
-                                    problem: String(localized: "This link cannot be used on iPhone. bx on iPhone runs reality servers."))
+                                    problem: String(localized: "This link cannot be used on iPhone. bx on iPhone runs reality servers.", bundle: .bx))
         }
     }
 
@@ -130,7 +130,7 @@ final class TunnelController: ObservableObject {
         let json = BxkitConfigureWithOptions(link, policyJSON, optionsJSON, BundledLists.chinaDomain, BundledLists.chinaCIDR, &error)
         if let error {
             if error.localizedDescription.contains("no in-process sing-box outbound") {
-                throw DriverError(String(localized: "This server type is not supported on iPhone yet. bx on iPhone runs reality servers (vless:// links, or a bx:// link that contains one)."))
+                throw DriverError(String(localized: "This server type is not supported on iPhone yet. bx on iPhone runs reality servers (vless:// links, or a bx:// link that contains one).", bundle: .bx))
             }
             throw error
         }

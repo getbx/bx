@@ -87,6 +87,11 @@ iOS 同一时间只能开一个 VPN,开了 Tailscale App 就开不了 bx。做�
   代码里拼出来的字串必须写成 `String(localized:)`;Explain 的「原因」来自 Go 的措辞表
   (`explainwords.AllLabels`),按原句查表。`TestIOSEveryVisibleStringHasAChineseTranslation` 钉住
   每一句都有译文、词表里没有陈旧条目。
+- **App 内切语言**(右上角地球,与 Mac 菜单同样三项:跟随系统 / English / 简体中文,各语言用自己的文字写;
+  「跟随系统」只认简体,繁体回英文)。**立即生效、不重启**(`App/Language.swift`):Text 字面量经
+  `Bundle.main` 的子类查表;`String(localized:)` 不走那条路,**每处必须带 `bundle: .bx`**
+  (`TestIOSLocalizedStringsUseTheChosenLanguage`,模拟器上实测过漏带就停在旧语言)。系统画的控件
+  (粘贴按钮等)跟进程语言,下次打开才跟上。fixture 运行不读不写这个选择。
 - 外面来的链接(扫码、粘贴、bx:// 打开)全都走 `TunnelController.receive` 那张说出地址的确认单。
 
 ## 手机先装:在 App 里装好服务器(2026-09-30,真机未验)

@@ -249,4 +249,17 @@ final class HomeScreenUITests: XCTestCase {
         let offline = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Offline")).firstMatch
         XCTAssertTrue(offline.exists, "an offline device must say so")
     }
+
+    // Like the Mac: switch the language inside the app, at once, and find the way back.
+    func testTheLanguageSwitchesAtOnceAndBack() {
+        let app = launch(["--fixture-server"])
+        XCTAssertTrue(app.buttons["Turn On Protection"].waitForExistence(timeout: 5))
+        app.buttons["language.menu"].tap()
+        app.buttons["简体中文"].tap()
+        XCTAssertTrue(app.buttons["打开保护"].waitForExistence(timeout: 5), "the switch did not take effect without a restart")
+        app.buttons["language.menu"].tap()
+        XCTAssertTrue(app.buttons["English"].exists, "English must be named in English, wherever the user is stuck")
+        app.buttons["English"].tap()
+        XCTAssertTrue(app.buttons["Turn On Protection"].waitForExistence(timeout: 5))
+    }
 }
